@@ -216,4 +216,4 @@ Tested on Intel Xeon E5-2683 v4 (8 cores), 11 GB RAM:
 
 ## License
 
-Private project. All rights reserved.
+[MIT License](LICENSE)
