@@ -82,7 +82,6 @@ func NewRouter(cfg *config.Config) (http.Handler, func(), error) {
 	r.Use(chimw.Logger)
 	r.Use(chimw.Recoverer)
 	r.Use(chimw.Compress(5))
-	r.Use(chimw.Timeout(30 * time.Second))
 
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   cfg.CORSOrigins,
@@ -95,16 +94,28 @@ func NewRouter(cfg *config.Config) (http.Handler, func(), error) {
 
 	// Public routes (no auth)
 	r.Get("/api/health", srv.handleHealth)
+	r.Get("/api/version", srv.handleVersion)
 	r.Post("/api/auth/login", srv.handleLogin)
-	r.Post("/api/auth/register", srv.handleRegister) // first user = admin, then admin-only
+	r.Post("/api/auth/register", srv.handleRegister)
 	r.Get("/api/auth/check", srv.handleAuthCheck)
 
 	// Prometheus scrape endpoint — internal, no auth
 	r.Get("/api/internal/metrics", srv.handleKresdMetrics)
 
-	// Protected API routes (require JWT)
+	// Admin update routes (no timeout — SSE streams for minutes)
+	r.Route("/api/admin", func(r chi.Router) {
+		r.Use(srv.authMiddleware)
+		r.Use(srv.adminMiddleware)
+
+		r.Get("/update/check", srv.handleUpdateCheck)
+		r.Post("/update/execute", srv.handleUpdateExecute)
+		r.Get("/update/status", srv.handleUpdateStatus)
+	})
+
+	// Protected API routes (require JWT, with timeout)
 	r.Route("/api", func(r chi.Router) {
 		r.Use(srv.authMiddleware)
+		r.Use(chimw.Timeout(30 * time.Second))
 
 		// User info
 		r.Get("/auth/me", srv.handleMe)

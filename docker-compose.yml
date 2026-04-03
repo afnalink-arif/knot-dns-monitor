@@ -112,10 +112,16 @@ services:
       retries: 10
 
   backend:
-    build: ./services/backend
+    build:
+      context: ./services/backend
+      args:
+        APP_VERSION: "${APP_VERSION:-dev}"
     restart: unless-stopped
     ports:
       - "127.0.0.1:8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - .:/project:rw
     environment:
       SERVER_PORT: "8080"
       PROMETHEUS_URL: http://prometheus:9090
@@ -125,6 +131,7 @@ services:
       POSTGRES_URL: postgres://dnsmon:${PG_PASSWORD}@postgres:5432/dnsmonitor?sslmode=disable
       JWT_SECRET_FILE: /run/secrets/jwt_secret
       KRESD_METRICS_URL: http://kresd:5000/metrics
+      PROJECT_DIR: /project
     secrets:
       - jwt_secret
     depends_on:

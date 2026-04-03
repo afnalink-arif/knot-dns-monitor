@@ -13,8 +13,11 @@ import (
 	"github.com/knot-dns-monitor/backend/internal/config"
 )
 
+var version = "dev"
+
 func main() {
 	cfg := config.Load()
+	cfg.Version = version
 
 	router, cleanup, err := api.NewRouter(cfg)
 	if err != nil {
@@ -26,12 +29,12 @@ func main() {
 		Addr:         ":" + cfg.ServerPort,
 		Handler:      router,
 		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 30 * time.Second,
+		WriteTimeout: 10 * time.Minute,
 		IdleTimeout:  60 * time.Second,
 	}
 
 	go func() {
-		log.Printf("Backend API listening on :%s", cfg.ServerPort)
+		log.Printf("Backend API v%s listening on :%s", version, cfg.ServerPort)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Server error: %v", err)
 		}

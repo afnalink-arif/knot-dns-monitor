@@ -1,6 +1,7 @@
-import { createSignal, onMount } from "solid-js";
+import { createSignal, onMount, Show, For } from "solid-js";
 import Layout from "~/components/Layout";
 import { authHeaders, getToken, logout } from "~/lib/auth";
+import { updateAPI, type UpdateCheckResult } from "~/lib/api";
 
 export default function SettingsPage() {
   const [username, setUsername] = createSignal("");
@@ -20,6 +21,15 @@ export default function SettingsPage() {
   const [newUserRole, setNewUserRole] = createSignal("viewer");
   const [userMsg, setUserMsg] = createSignal("");
   const [userError, setUserError] = createSignal(false);
+
+  // System update (admin only)
+  const [updateInfo, setUpdateInfo] = createSignal<UpdateCheckResult | null>(null);
+  const [updateChecking, setUpdateChecking] = createSignal(false);
+  const [updateRunning, setUpdateRunning] = createSignal(false);
+  const [updateOutput, setUpdateOutput] = createSignal<string[]>([]);
+  const [updateDone, setUpdateDone] = createSignal(false);
+  const [updateError, setUpdateError] = createSignal("");
+  const [restarting, setRestarting] = createSignal(false);
 
   onMount(async () => {
     try {
@@ -108,12 +118,98 @@ export default function SettingsPage() {
     }
   };
 
+  const checkForUpdates = async () => {
+    setUpdateChecking(true);
+    setUpdateError("");
+    try {
+      const data = await updateAPI.check();
+      setUpdateInfo(data);
+    } catch (err: any) {
+      setUpdateError(err.message || "Failed to check for updates");
+    } finally {
+      setUpdateChecking(false);
+    }
+  };
+
+  const pollHealth = () => {
+    setRestarting(true);
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch("/api/health", { signal: AbortSignal.timeout(3000) });
+        if (res.ok) {
+          clearInterval(interval);
+          setRestarting(false);
+          setUpdateDone(true);
+          setUpdateRunning(false);
+          // refresh update info
+          checkForUpdates();
+        }
+      } catch {}
+    }, 3000);
+  };
+
+  const executeUpdate = async () => {
+    setUpdateRunning(true);
+    setUpdateOutput([]);
+    setUpdateDone(false);
+    setUpdateError("");
+
+    try {
+      const res = await fetch("/api/admin/update/execute", {
+        method: "POST",
+        headers: authHeaders(),
+      });
+
+      if (!res.ok) {
+        const data = await res.json();
+        setUpdateError(data.error || "Failed to start update");
+        setUpdateRunning(false);
+        return;
+      }
+
+      const reader = res.body!.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          if (line.startsWith("data: ")) {
+            const msg = line.slice(6);
+            setUpdateOutput((prev) => [...prev, msg]);
+          } else if (line.startsWith("event: done")) {
+            setUpdateDone(true);
+            setUpdateRunning(false);
+          } else if (line.startsWith("event: error")) {
+            // next data line will have the error
+          }
+        }
+      }
+
+      if (!updateDone()) {
+        // Stream ended without done event — backend probably restarted itself
+        pollHealth();
+      }
+    } catch {
+      // Connection lost — backend is restarting
+      if (!updateDone()) {
+        pollHealth();
+      }
+    }
+  };
+
   return (
     <Layout>
       <div class="space-y-6 max-w-2xl">
         <div>
           <h1 class="text-2xl font-bold text-white">Settings</h1>
-          <p class="text-sm text-slate-400 mt-1">Account and user management</p>
+          <p class="text-sm text-slate-400 mt-1">Account and system management</p>
         </div>
 
         {/* Current User Info */}
@@ -243,6 +339,117 @@ export default function SettingsPage() {
                 Tambah User
               </button>
             </form>
+          </div>
+        )}
+
+        {/* System Update (Admin Only) */}
+        {role() === "admin" && (
+          <div class="bg-slate-800 rounded-xl p-5 border border-slate-700">
+            <div class="flex items-center justify-between mb-4">
+              <div>
+                <h3 class="text-sm font-medium text-slate-400">System Update</h3>
+                <p class="text-xs text-slate-500 mt-0.5">Check and apply updates from GitHub</p>
+              </div>
+              <Show when={updateInfo()}>
+                <span class="text-xs font-mono text-slate-500">
+                  v{updateInfo()!.current_version}
+                  <Show when={updateInfo()!.current_commit}>
+                    {" "}({updateInfo()!.current_commit})
+                  </Show>
+                </span>
+              </Show>
+            </div>
+
+            {/* Error message */}
+            <Show when={updateError()}>
+              <div class="mb-4 p-3 rounded-lg border text-sm bg-red-500/10 border-red-500/20 text-red-400">
+                {updateError()}
+              </div>
+            </Show>
+
+            {/* Update available banner */}
+            <Show when={updateInfo()?.update_available}>
+              <div class="mb-4 p-3 rounded-lg border bg-amber-500/10 border-amber-500/20">
+                <div class="flex items-center gap-2 mb-2">
+                  <div class="w-2 h-2 bg-amber-400 rounded-full animate-pulse" />
+                  <span class="text-sm font-medium text-amber-400">
+                    {updateInfo()!.commits_behind} update{updateInfo()!.commits_behind > 1 ? "s" : ""} available
+                  </span>
+                </div>
+                <div class="space-y-1 ml-4">
+                  <For each={updateInfo()!.commit_log.slice(0, 10)}>
+                    {(commit) => (
+                      <p class="text-xs text-slate-400 font-mono">{commit}</p>
+                    )}
+                  </For>
+                  <Show when={updateInfo()!.commit_log.length > 10}>
+                    <p class="text-xs text-slate-500">... and {updateInfo()!.commit_log.length - 10} more</p>
+                  </Show>
+                </div>
+              </div>
+            </Show>
+
+            {/* No updates */}
+            <Show when={updateInfo() && !updateInfo()!.update_available && !updateDone()}>
+              <div class="mb-4 p-3 rounded-lg border bg-emerald-500/10 border-emerald-500/20">
+                <span class="text-sm text-emerald-400">System is up to date</span>
+              </div>
+            </Show>
+
+            {/* Update complete */}
+            <Show when={updateDone()}>
+              <div class="mb-4 p-3 rounded-lg border bg-emerald-500/10 border-emerald-500/20">
+                <span class="text-sm text-emerald-400">Update completed successfully!</span>
+              </div>
+            </Show>
+
+            {/* Terminal output */}
+            <Show when={updateOutput().length > 0}>
+              <div
+                class="mb-4 bg-slate-950 rounded-lg p-4 font-mono text-xs leading-5 max-h-80 overflow-y-auto border border-slate-700"
+                ref={(el) => {
+                  const observer = new MutationObserver(() => {
+                    el.scrollTop = el.scrollHeight;
+                  });
+                  observer.observe(el, { childList: true, subtree: true });
+                }}
+              >
+                <For each={updateOutput()}>
+                  {(line) => (
+                    <div class={
+                      line.includes("[OK]") ? "text-emerald-400" :
+                      line.includes("[WARN]") ? "text-amber-400" :
+                      line.includes("[ERROR]") ? "text-red-400" :
+                      line.includes("[INFO]") ? "text-blue-400" :
+                      "text-slate-300"
+                    }>{line}</div>
+                  )}
+                </For>
+                <Show when={restarting()}>
+                  <div class="text-amber-400 animate-pulse mt-1">Services restarting, please wait...</div>
+                </Show>
+              </div>
+            </Show>
+
+            {/* Action buttons */}
+            <div class="flex gap-3">
+              <button
+                onClick={checkForUpdates}
+                disabled={updateChecking() || updateRunning()}
+                class="px-4 py-2 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 disabled:text-slate-500 text-white text-sm rounded-lg transition-colors"
+              >
+                {updateChecking() ? "Checking..." : "Check for Updates"}
+              </button>
+              <Show when={updateInfo()?.update_available}>
+                <button
+                  onClick={executeUpdate}
+                  disabled={updateRunning()}
+                  class="px-4 py-2 bg-amber-600 hover:bg-amber-700 disabled:bg-amber-800 text-white text-sm font-medium rounded-lg transition-colors"
+                >
+                  {updateRunning() ? "Updating..." : "Update Now"}
+                </button>
+              </Show>
+            </div>
           </div>
         )}
 

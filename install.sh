@@ -258,6 +258,7 @@ echo ""
 info "Building and starting services..."
 cd "${PROJECT_DIR}"
 
+export APP_VERSION=$(cat VERSION 2>/dev/null || echo "dev")
 docker compose build --parallel 2>&1 | tail -5
 ok "Images built"
 

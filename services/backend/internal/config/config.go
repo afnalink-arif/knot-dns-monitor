@@ -14,6 +14,8 @@ type Config struct {
 	PostgresURL   string
 	JWTSecret     string
 	CORSOrigins   []string
+	Version       string
+	ProjectDir    string
 }
 
 func Load() *Config {
@@ -35,6 +37,7 @@ func Load() *Config {
 		PostgresURL:   envOrDefault("POSTGRES_URL", "postgres://dnsmon:password@localhost:5432/dnsmonitor?sslmode=disable"),
 		JWTSecret:     jwtSecret,
 		CORSOrigins:   strings.Split(origins, ","),
+		ProjectDir:    envOrDefault("PROJECT_DIR", "/project"),
 	}
 }
 

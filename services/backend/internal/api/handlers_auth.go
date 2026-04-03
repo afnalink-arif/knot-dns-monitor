@@ -277,6 +277,18 @@ func getClaimsFromContext(ctx context.Context) map[string]interface{} {
 	return claims
 }
 
+// adminMiddleware restricts access to admin-role users only
+func (s *Server) adminMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		claims := getClaimsFromContext(r.Context())
+		if claims == nil || claims["role"] != "admin" {
+			http.Error(w, `{"error":"admin access required"}`, http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // generateSetupToken creates a one-time setup token for first user registration
 func generateSetupToken() string {
 	b := make([]byte, 16)

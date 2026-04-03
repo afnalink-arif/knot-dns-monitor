@@ -14,13 +14,21 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
+NONINTERACTIVE="${NONINTERACTIVE:-0}"
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$PROJECT_DIR"
 
-info()  { echo -e "${BLUE}[INFO]${NC} $1"; }
-ok()    { echo -e "${GREEN}[OK]${NC} $1"; }
-warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
-error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
+if [[ "$NONINTERACTIVE" == "1" ]]; then
+  info()  { echo "[INFO] $1"; }
+  ok()    { echo "[OK] $1"; }
+  warn()  { echo "[WARN] $1"; }
+  error() { echo "[ERROR] $1"; exit 1; }
+else
+  info()  { echo -e "${BLUE}[INFO]${NC} $1"; }
+  ok()    { echo -e "${GREEN}[OK]${NC} $1"; }
+  warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
+  error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
+fi
 
 echo ""
 echo -e "${BLUE}╔══════════════════════════════════════════╗${NC}"
@@ -46,17 +54,25 @@ if git rev-parse --is-inside-work-tree &>/dev/null; then
     BEFORE=$(git rev-parse HEAD)
     git pull --ff-only 2>&1 || {
         warn "git pull failed. You may have local changes."
-        read -rp "  Continue anyway? [y/N]: " CONT
-        [[ "$CONT" =~ ^[Yy]$ ]] || exit 1
+        if [[ "$NONINTERACTIVE" == "1" ]]; then
+            warn "Non-interactive mode, continuing anyway."
+        else
+            read -rp "  Continue anyway? [y/N]: " CONT
+            [[ "$CONT" =~ ^[Yy]$ ]] || exit 1
+        fi
     }
     AFTER=$(git rev-parse HEAD)
 
     if [[ "$BEFORE" == "$AFTER" ]]; then
         info "Already up to date."
-        read -rp "Force rebuild anyway? [y/N]: " FORCE
-        if [[ ! "$FORCE" =~ ^[Yy]$ ]]; then
-            echo "Nothing to do."
-            exit 0
+        if [[ "$NONINTERACTIVE" == "1" ]]; then
+            info "Non-interactive mode, rebuilding anyway."
+        else
+            read -rp "Force rebuild anyway? [y/N]: " FORCE
+            if [[ ! "$FORCE" =~ ^[Yy]$ ]]; then
+                echo "Nothing to do."
+                exit 0
+            fi
         fi
     else
         COMMITS=$(git log --oneline "${BEFORE}..${AFTER}" | wc -l)
@@ -103,8 +119,9 @@ fi
 
 # ---- Step 3: Rebuild custom images ----
 info "Rebuilding custom images..."
+export APP_VERSION=$(cat VERSION 2>/dev/null || echo "dev")
 docker compose build --parallel 2>&1 | tail -5
-ok "Images rebuilt"
+ok "Images rebuilt (version: ${APP_VERSION})"
 
 # ---- Step 4: Rolling restart ----
 info "Restarting services..."

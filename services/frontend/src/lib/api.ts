@@ -80,6 +80,26 @@ export const healthAPI = {
   check: () => fetchAPI<HealthStatus>("/api/health"),
 };
 
+// Version API
+export const versionAPI = {
+  get: () => fetchAPI<{ version: string }>("/api/version"),
+};
+
+// Admin Update API
+export const updateAPI = {
+  check: () => fetchAPI<UpdateCheckResult>("/api/admin/update/check"),
+  status: () => fetchAPI<{ in_progress: boolean }>("/api/admin/update/status"),
+};
+
+export interface UpdateCheckResult {
+  current_version: string;
+  current_commit: string;
+  latest_commit: string;
+  update_available: boolean;
+  commits_behind: number;
+  commit_log: string[];
+}
+
 // Resolver info API
 export const resolverAPI = {
   info: () => fetchAPI<ResolverInfo>("/api/resolver/info"),
