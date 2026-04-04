@@ -143,7 +143,7 @@ fi
 # ---- Step 3: Rebuild custom images ----
 info "Rebuilding custom images..."
 export APP_VERSION=$(cat VERSION 2>/dev/null || echo "dev")
-$COMPOSE_CMD build --parallel 2>&1 | tail -5
+docker compose build --parallel 2>&1 | tail -5
 ok "Images rebuilt (version: ${APP_VERSION})"
 
 # ---- Step 4: Rolling restart ----
@@ -151,30 +151,30 @@ info "Restarting services..."
 
 # Restart infra first (they have health checks)
 info "  Restarting infrastructure services..."
-$COMPOSE_CMD up -d clickhouse redis postgres
+docker compose up -d clickhouse redis postgres
 sleep 3
 
 # Restart dnstap-ingester before kresd (socket dependency)
 info "  Restarting dnstap-ingester..."
-$COMPOSE_CMD up -d dnstap-ingester
+docker compose up -d dnstap-ingester
 sleep 2
 
 # Restart kresd
 info "  Restarting kresd..."
-$COMPOSE_CMD up -d kresd
+docker compose up -d kresd
 sleep 2
 
 # Restart monitoring
 info "  Restarting monitoring..."
-$COMPOSE_CMD up -d prometheus node-exporter
+docker compose up -d prometheus node-exporter
 
 # Restart frontend first (static files, no state)
 info "  Restarting frontend..."
-$COMPOSE_CMD up -d frontend
+docker compose up -d frontend
 
 # Restart reverse proxy
 info "  Restarting caddy..."
-$COMPOSE_CMD up -d caddy
+docker compose up -d caddy
 
 # ---- Step 5: Health check (before backend restart) ----
 echo ""
@@ -208,4 +208,4 @@ echo ""
 # this kills the update process, so everything else must be done first.
 # Use nohup so the docker command survives even if this shell is killed.
 info "Restarting backend container..."
-nohup $COMPOSE_CMD up -d backend >/dev/null 2>&1 &
+nohup docker compose up -d backend >/dev/null 2>&1 &
