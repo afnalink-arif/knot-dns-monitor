@@ -14,6 +14,16 @@ import (
 
 var validDomainRe = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}$`)
 
+// resolveKresdIP resolves the "kresd" docker service name to an IP address.
+// dig can't use docker hostnames directly — it needs an IP.
+func resolveKresdIP() string {
+	addrs, err := net.LookupHost("kresd")
+	if err == nil && len(addrs) > 0 {
+		return addrs[0]
+	}
+	return "kresd" // fallback
+}
+
 type DNSLookupRequest struct {
 	Domain string `json:"domain"`
 	Type   string `json:"type"`
@@ -78,8 +88,8 @@ func (s *Server) handleDNSLookup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Determine DNS server
-	// Use docker service name "kresd" for local resolver (backend runs in separate container)
-	serverAddr := "kresd" // docker service name
+	// Resolve docker service name to IP (dig can't resolve docker hostnames reliably)
+	serverAddr := resolveKresdIP()
 	serverLabel := "Local Resolver (kresd)"
 	if req.Server == "google" {
 		serverAddr = "8.8.8.8"
@@ -92,8 +102,8 @@ func (s *Server) handleDNSLookup(w http.ResponseWriter, r *http.Request) {
 		serverLabel = "Quad9 DNS (9.9.9.9)"
 	}
 
-	// Run dig
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	// Run dig — use background context to avoid inheriting any request deadline
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	start := time.Now()
@@ -157,7 +167,7 @@ func (s *Server) handleDNSLookup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check if domain is blocked (local server only)
-	if serverAddr == "kresd" {
+	if req.Server == "local" {
 		result.Blocked = checkIfBlocked(result, s)
 		if result.Blocked {
 			result.Status = "blocked"
@@ -269,13 +279,13 @@ func compareLookup(domain, qtype string, s *Server) (local, external DNSLookupRe
 		ch <- result
 	}
 
-	go lookup("kresd", "Local (kresd)")
+	go lookup(resolveKresdIP(), "Local (kresd)")
 	go lookup("8.8.8.8", "Google DNS")
 
 	r1 := <-ch
 	r2 := <-ch
 
-	if r1.ServerAddr == "kresd" {
+	if r1.Server == "Local (kresd)" {
 		return r1, r2
 	}
 	return r2, r1
