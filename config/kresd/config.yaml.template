@@ -1,6 +1,6 @@
 # Knot Resolver 6.2 Production Configuration
 
-workers: auto
+workers: __WORKERS__
 
 logging:
   level: info

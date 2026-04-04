@@ -222,6 +222,11 @@ func (s *Server) handleRPZSync(w http.ResponseWriter, r *http.Request) {
 		if name := findContainerName("kresd"); name != "" {
 			exec.Command("docker", "restart", name).Run()
 		}
+		// Check if workers were reduced
+		rpzFile := filepath.Join(s.cfg.ProjectDir, "config/kresd/rpz.zone")
+		if info, err := os.Stat(rpzFile); err == nil && info.Size() > 100*1024*1024 {
+			sendEvent("[INFO] Zone besar terdeteksi — kresd dibatasi 2 workers untuk hemat memory")
+		}
 		sendEvent("[OK] DNS resolver restarted — kresd sedang memuat RPZ zone ke trie...")
 		sendEvent(fmt.Sprintf("[INFO] Proses loading %d domain ke memori bisa memakan 1-5 menit. Pantau Kresd Memory di dashboard.", domainCount))
 	} else {
@@ -282,6 +287,18 @@ func (s *Server) regenerateKresdConfig(includeRPZ bool) {
 	cacheSize := envVars["CACHE_SIZE"]
 	if cacheSize == "" {
 		cacheSize = "8G"
+	}
+
+	// When RPZ is enabled with a large zone (17M+ domains), each kresd worker
+	// loads the entire zone file independently. 8 workers × ~2.5GB = 20GB OOM.
+	// Limit to 2 workers when RPZ is active to stay within 16GB RAM.
+	workers := "auto"
+	if includeRPZ {
+		rpzFile := filepath.Join(projectDir, "config/kresd/rpz.zone")
+		if info, err := os.Stat(rpzFile); err == nil && info.Size() > 100*1024*1024 { // >100MB
+			workers = "2"
+			log.Printf("RPZ zone is %.0f MB — limiting kresd to 2 workers to prevent OOM", float64(info.Size())/1024/1024)
+		}
 	}
 
 	// Build subnet views
@@ -345,6 +362,7 @@ func (s *Server) regenerateKresdConfig(includeRPZ bool) {
 	log.Printf("Regenerating kresd config: %d custom domains, RPZ native=%v", customCount, includeRPZ)
 
 	config := string(templateData)
+	config = strings.ReplaceAll(config, "__WORKERS__", workers)
 	config = strings.ReplaceAll(config, "__CACHE_SIZE__", cacheSize)
 	config = strings.ReplaceAll(config, "__SUBNET_VIEWS__", subnetViews.String())
 	config = strings.ReplaceAll(config, "__LOCAL_DATA__", localData.String())
