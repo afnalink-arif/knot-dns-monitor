@@ -129,7 +129,7 @@ func (s *Server) handleRPZSync(w http.ResponseWriter, r *http.Request) {
 		axfrCtx, axfrCancel := context.WithTimeout(context.Background(), 30*time.Minute)
 		cmd := exec.CommandContext(axfrCtx,
 			"sh", "-c", fmt.Sprintf(
-				"dig AXFR @%s %s +noidnout +onesoa +tcp +time=300 +tries=2 > %s 2>&1",
+				"dig AXFR @%s %s +noidnout +tcp +time=300 +tries=2 +nocomments +nostats +nocmd > %s 2>/dev/null",
 				master, cfg.ZoneName, tmpFile))
 
 		// Monitor file size during download (progress updates)
@@ -222,7 +222,8 @@ func (s *Server) handleRPZSync(w http.ResponseWriter, r *http.Request) {
 		if name := findContainerName("kresd"); name != "" {
 			exec.Command("docker", "restart", name).Run()
 		}
-		sendEvent("[OK] DNS resolver restarted — kresd loads RPZ zone natively (efficient trie)")
+		sendEvent("[OK] DNS resolver restarted — kresd sedang memuat RPZ zone ke trie...")
+		sendEvent(fmt.Sprintf("[INFO] Proses loading %d domain ke memori bisa memakan 1-5 menit. Pantau Kresd Memory di dashboard.", domainCount))
 	} else {
 		sendEvent("[INFO] RPZ is disabled — zone file saved but not applied to resolver")
 	}
