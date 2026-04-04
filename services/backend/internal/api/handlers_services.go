@@ -20,22 +20,35 @@ type ServiceStatus struct {
 }
 
 func (s *Server) handleListServices(w http.ResponseWriter, r *http.Request) {
-	args := s.composeArgs()
+	// Use docker ps directly — works reliably from inside any container.
+	// Detect project name from our own container's labels.
+	projectName := detectProjectName()
+
 	services := []ServiceStatus{}
-
 	for _, svc := range managedServices {
-		st := ServiceStatus{Name: svc, Status: "unknown"}
+		st := ServiceStatus{Name: svc, Status: "stopped"}
 
-		cmdArgs := append(args, "ps", "--format", "json", svc)
-		out, err := exec.CommandContext(r.Context(), "docker", cmdArgs...).Output()
-		if err == nil && len(out) > 0 {
-			var info struct {
-				State  string `json:"State"`
-				Health string `json:"Health"`
-			}
-			if json.Unmarshal(out, &info) == nil {
-				st.Status = info.State
-				st.Health = info.Health
+		filter := fmt.Sprintf("label=com.docker.compose.service=%s", svc)
+		var args []string
+		if projectName != "" {
+			projectFilter := fmt.Sprintf("label=com.docker.compose.project=%s", projectName)
+			args = []string{"ps", "-a", "--filter", filter, "--filter", projectFilter, "--format", "{{.State}}|{{.Status}}"}
+		} else {
+			args = []string{"ps", "-a", "--filter", filter, "--format", "{{.State}}|{{.Status}}"}
+		}
+
+		out, err := exec.CommandContext(r.Context(), "docker", args...).Output()
+		if err == nil && len(strings.TrimSpace(string(out))) > 0 {
+			line := strings.TrimSpace(string(out))
+			parts := strings.SplitN(line, "|", 2)
+			st.Status = strings.ToLower(parts[0])
+			if len(parts) > 1 {
+				statusDetail := strings.ToLower(parts[1])
+				if strings.Contains(statusDetail, "(healthy)") {
+					st.Health = "healthy"
+				} else if strings.Contains(statusDetail, "(unhealthy)") {
+					st.Health = "unhealthy"
+				}
 			}
 		}
 
@@ -43,6 +56,22 @@ func (s *Server) handleListServices(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, services)
+}
+
+// detectProjectName reads the compose project name from this container's labels.
+func detectProjectName() string {
+	hostname, err := exec.Command("hostname").Output()
+	if err != nil {
+		return ""
+	}
+	out, err := exec.Command(
+		"docker", "inspect", strings.TrimSpace(string(hostname)),
+		"--format", `{{index .Config.Labels "com.docker.compose.project"}}`,
+	).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func (s *Server) handleRestartService(w http.ResponseWriter, r *http.Request) {
@@ -54,7 +83,6 @@ func (s *Server) handleRestartService(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate service name
 	valid := false
 	for _, svc := range managedServices {
 		if svc == req.Service {
@@ -67,23 +95,25 @@ func (s *Server) handleRestartService(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	args := s.composeArgs()
+	// Find the container name for this service
+	containerName := findContainerName(req.Service)
+	if containerName == "" {
+		http.Error(w, `{"error":"container not found"}`, http.StatusNotFound)
+		return
+	}
 
 	// For backend, restart in background since it kills itself
 	if req.Service == "backend" {
 		go func() {
-			cmdArgs := append(args, "restart", "backend")
-			exec.Command("docker", cmdArgs...).Run()
+			exec.Command("docker", "restart", containerName).Run()
 		}()
 		writeJSON(w, map[string]string{"message": "backend restarting"})
 		return
 	}
 
-	cmdArgs := append(args, "restart", req.Service)
-	out, err := exec.CommandContext(r.Context(), "docker", cmdArgs...).CombinedOutput()
+	out, err := exec.CommandContext(r.Context(), "docker", "restart", containerName).CombinedOutput()
 	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"%s","output":"%s"}`,
-			err.Error(), strings.TrimSpace(string(out))), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, strings.TrimSpace(string(out))), http.StatusInternalServerError)
 		return
 	}
 
@@ -101,9 +131,6 @@ func (s *Server) handleRestartAll(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("X-Accel-Buffering", "no")
 
-	args := s.composeArgs()
-
-	// Restart order (same as update.sh)
 	groups := []struct {
 		label    string
 		services []string
@@ -119,8 +146,13 @@ func (s *Server) handleRestartAll(w http.ResponseWriter, r *http.Request) {
 		flusher.Flush()
 
 		for _, svc := range g.services {
-			cmdArgs := append(args, "restart", svc)
-			out, err := exec.CommandContext(r.Context(), "docker", cmdArgs...).CombinedOutput()
+			containerName := findContainerName(svc)
+			if containerName == "" {
+				fmt.Fprintf(w, "data: [ERROR] %s: container not found\n\n", svc)
+				flusher.Flush()
+				continue
+			}
+			out, err := exec.CommandContext(r.Context(), "docker", "restart", containerName).CombinedOutput()
 			if err != nil {
 				fmt.Fprintf(w, "data: [ERROR] %s: %s\n\n", svc, strings.TrimSpace(string(out)))
 			} else {
@@ -130,22 +162,34 @@ func (s *Server) handleRestartAll(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Restart backend last (kills this container)
+	// Restart backend last
 	fmt.Fprintf(w, "data: Restarting backend...\n\n")
 	flusher.Flush()
 
 	go func() {
-		cmdArgs := append(args, "restart", "backend")
-		exec.Command("docker", cmdArgs...).Run()
+		if name := findContainerName("backend"); name != "" {
+			exec.Command("docker", "restart", name).Run()
+		}
 	}()
 
 	fmt.Fprintf(w, "event: done\ndata: All services restarted\n\n")
 	flusher.Flush()
 }
 
-// composeArgs returns docker compose args that work from inside a container.
-// For restart/ps operations, we use the container-accessible /project path
-// since these don't create new bind mounts (unlike build/up).
-func (s *Server) composeArgs() []string {
-	return []string{"compose", "-f", s.cfg.ProjectDir + "/docker-compose.yml"}
+// findContainerName finds the docker container name for a compose service.
+func findContainerName(service string) string {
+	projectName := detectProjectName()
+	filter := fmt.Sprintf("label=com.docker.compose.service=%s", service)
+	var args []string
+	if projectName != "" {
+		projectFilter := fmt.Sprintf("label=com.docker.compose.project=%s", projectName)
+		args = []string{"ps", "-a", "--filter", filter, "--filter", projectFilter, "--format", "{{.Names}}"}
+	} else {
+		args = []string{"ps", "-a", "--filter", filter, "--format", "{{.Names}}"}
+	}
+	out, err := exec.Command("docker", args...).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
