@@ -354,6 +354,11 @@ func (s *Server) regenerateKresdConfig(includeRPZ bool) {
 
 // countRPZDomains counts unique blocked domains by scanning the zone file line by line.
 // Streaming approach — doesn't load entire file into memory.
+//
+// RPZ zone format: records have the zone name as suffix, e.g.:
+//   badsite.com.trustpositifkominfo.  IN  CNAME  .
+//   *.badsite.com.trustpositifkominfo.  IN  CNAME  .
+// We strip the zone suffix to get the actual domain.
 func countRPZDomains(path, zoneName string) int {
 	f, err := os.Open(path)
 	if err != nil {
@@ -362,8 +367,8 @@ func countRPZDomains(path, zoneName string) int {
 	defer f.Close()
 
 	count := 0
+	zoneSuffix := "." + strings.ToLower(zoneName)
 	scanner := bufio.NewScanner(f)
-	// Increase buffer for potentially long lines
 	scanner.Buffer(make([]byte, 64*1024), 64*1024)
 
 	for scanner.Scan() {
@@ -377,13 +382,8 @@ func countRPZDomains(path, zoneName string) int {
 			continue
 		}
 
-		domain := strings.ToLower(fields[0])
-		domain = strings.TrimSuffix(domain, ".")
-
-		// Skip SOA, NS, RPZ meta records
-		if strings.Contains(domain, zoneName) || domain == "@" || domain == "" {
-			continue
-		}
+		owner := strings.ToLower(fields[0])
+		owner = strings.TrimSuffix(owner, ".")
 
 		// Skip rpz-passthru (whitelisted)
 		lineUpper := strings.ToUpper(line)
@@ -391,7 +391,20 @@ func countRPZDomains(path, zoneName string) int {
 			continue
 		}
 
-		if strings.Contains(domain, ".") {
+		// Extract domain by stripping RPZ zone suffix
+		// e.g. "badsite.com.trustpositifkominfo" → "badsite.com"
+		domain := owner
+		if idx := strings.Index(owner, zoneSuffix); idx > 0 {
+			domain = owner[:idx]
+		} else if owner == strings.ToLower(zoneName) || owner == "@" {
+			// Skip SOA/NS records for the zone apex itself
+			continue
+		}
+
+		// Skip wildcard prefix for counting (*.domain counts as same domain)
+		domain = strings.TrimPrefix(domain, "*.")
+
+		if domain != "" && strings.Contains(domain, ".") {
 			count++
 		}
 	}
