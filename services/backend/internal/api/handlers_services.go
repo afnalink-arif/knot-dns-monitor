@@ -20,19 +20,15 @@ type ServiceStatus struct {
 }
 
 func (s *Server) handleListServices(w http.ResponseWriter, r *http.Request) {
-	composePath := s.resolveComposePath()
+	args := s.composeArgs()
 	services := []ServiceStatus{}
 
 	for _, svc := range managedServices {
 		st := ServiceStatus{Name: svc, Status: "unknown"}
 
-		out, err := exec.CommandContext(r.Context(),
-			"docker", "compose", "-f", composePath+"/docker-compose.yml",
-			"--project-directory", composePath,
-			"ps", "--format", "json", svc,
-		).Output()
+		cmdArgs := append(args, "ps", "--format", "json", svc)
+		out, err := exec.CommandContext(r.Context(), "docker", cmdArgs...).Output()
 		if err == nil && len(out) > 0 {
-			// docker compose ps --format json outputs one JSON object per line
 			var info struct {
 				State  string `json:"State"`
 				Health string `json:"Health"`
@@ -71,26 +67,20 @@ func (s *Server) handleRestartService(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	composePath := s.resolveComposePath()
+	args := s.composeArgs()
 
 	// For backend, restart in background since it kills itself
 	if req.Service == "backend" {
 		go func() {
-			exec.Command(
-				"docker", "compose", "-f", composePath+"/docker-compose.yml",
-				"--project-directory", composePath,
-				"restart", "backend",
-			).Run()
+			cmdArgs := append(args, "restart", "backend")
+			exec.Command("docker", cmdArgs...).Run()
 		}()
 		writeJSON(w, map[string]string{"message": "backend restarting"})
 		return
 	}
 
-	out, err := exec.CommandContext(r.Context(),
-		"docker", "compose", "-f", composePath+"/docker-compose.yml",
-		"--project-directory", composePath,
-		"restart", req.Service,
-	).CombinedOutput()
+	cmdArgs := append(args, "restart", req.Service)
+	out, err := exec.CommandContext(r.Context(), "docker", cmdArgs...).CombinedOutput()
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"%s","output":"%s"}`,
 			err.Error(), strings.TrimSpace(string(out))), http.StatusInternalServerError)
@@ -111,7 +101,7 @@ func (s *Server) handleRestartAll(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("X-Accel-Buffering", "no")
 
-	composePath := s.resolveComposePath()
+	args := s.composeArgs()
 
 	// Restart order (same as update.sh)
 	groups := []struct {
@@ -129,11 +119,8 @@ func (s *Server) handleRestartAll(w http.ResponseWriter, r *http.Request) {
 		flusher.Flush()
 
 		for _, svc := range g.services {
-			out, err := exec.CommandContext(r.Context(),
-				"docker", "compose", "-f", composePath+"/docker-compose.yml",
-				"--project-directory", composePath,
-				"restart", svc,
-			).CombinedOutput()
+			cmdArgs := append(args, "restart", svc)
+			out, err := exec.CommandContext(r.Context(), "docker", cmdArgs...).CombinedOutput()
 			if err != nil {
 				fmt.Fprintf(w, "data: [ERROR] %s: %s\n\n", svc, strings.TrimSpace(string(out)))
 			} else {
@@ -148,35 +135,17 @@ func (s *Server) handleRestartAll(w http.ResponseWriter, r *http.Request) {
 	flusher.Flush()
 
 	go func() {
-		exec.Command(
-			"docker", "compose", "-f", composePath+"/docker-compose.yml",
-			"--project-directory", composePath,
-			"restart", "backend",
-		).Run()
+		cmdArgs := append(args, "restart", "backend")
+		exec.Command("docker", cmdArgs...).Run()
 	}()
 
 	fmt.Fprintf(w, "event: done\ndata: All services restarted\n\n")
 	flusher.Flush()
 }
 
-// resolveComposePath returns the host project path for docker compose commands.
-func (s *Server) resolveComposePath() string {
-	// Try to detect host path when running inside a container
-	hostPath, err := exec.Command(
-		"docker", "inspect", getHostname(),
-		"--format", `{{range .Mounts}}{{if eq .Destination "/project"}}{{.Source}}{{end}}{{end}}`,
-	).Output()
-	if err == nil && len(strings.TrimSpace(string(hostPath))) > 0 {
-		return strings.TrimSpace(string(hostPath))
-	}
-	// Fallback to project dir (works when running on host)
-	return s.cfg.ProjectDir
-}
-
-func getHostname() string {
-	out, err := exec.Command("hostname").Output()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(out))
+// composeArgs returns docker compose args that work from inside a container.
+// For restart/ps operations, we use the container-accessible /project path
+// since these don't create new bind mounts (unlike build/up).
+func (s *Server) composeArgs() []string {
+	return []string{"compose", "-f", s.cfg.ProjectDir + "/docker-compose.yml"}
 }
