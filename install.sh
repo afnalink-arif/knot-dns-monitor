@@ -213,6 +213,8 @@ fi
 # ---- Generate TLS certificates ----
 info "Generating TLS certificates for DoT/DoH..."
 mkdir -p "${PROJECT_DIR}/config/kresd/tls"
+# Ensure RPZ zone file exists (Docker bind mount requires it)
+touch "${PROJECT_DIR}/config/kresd/rpz.zone"
 
 if [[ ! -f "${PROJECT_DIR}/config/kresd/tls/server.crt" ]]; then
     openssl req -x509 -newkey rsa:4096 -sha256 -days 3650 -nodes \

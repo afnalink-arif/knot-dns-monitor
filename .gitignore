@@ -9,3 +9,7 @@ config/kresd/tls/*.crt
 # Generated configs (from templates by install.sh)
 config/Caddyfile
 config/kresd/config.yaml
+
+# RPZ zone files (downloaded via AXFR, ~1 GB)
+config/kresd/rpz.zone
+config/kresd/rpz.zone.*

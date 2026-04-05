@@ -63,10 +63,5 @@ __SUBNET_VIEWS__
     answer: refused
 
 # DNS Filtering — custom blocked domains redirect to server IP (block page)
+# RPZ Komdigi uses native local-data.rpz (loaded via policy-loader into shared ruledb)
 __LOCAL_DATA__
-
-# RPZ Komdigi — loaded natively via policy.rpz() for performance
-# This uses kresd's internal trie, much more efficient than local-data for 500K+ domains
-lua:
-  script: |
-    __RPZ_LUA__

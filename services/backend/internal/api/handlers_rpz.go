@@ -10,9 +10,36 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
+
+// validRPZLabel matches a single valid DNS label for libknot:
+// starts and ends with alphanumeric, contains only alphanumeric and hyphens
+var validRPZLabel = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$`)
+
+// isValidRPZOwner validates an RPZ owner name for strict libknot compatibility.
+// Each label must start/end with alphanumeric and contain only alphanumeric + hyphens.
+// Underscores, special chars, and labels starting/ending with hyphens are rejected.
+func isValidRPZOwner(owner string) bool {
+	name := strings.TrimSuffix(owner, ".")
+	if name == "" {
+		return false
+	}
+	// Handle wildcard
+	name = strings.TrimPrefix(name, "*.")
+	labels := strings.Split(name, ".")
+	if len(labels) < 2 { // need at least 2 labels (domain + zone suffix)
+		return false
+	}
+	for _, l := range labels {
+		if l == "" || !validRPZLabel.MatchString(l) {
+			return false
+		}
+	}
+	return true
+}
 
 type RPZConfig struct {
 	Enabled        bool       `json:"enabled"`
@@ -198,12 +225,15 @@ func (s *Server) handleRPZSync(w http.ResponseWriter, r *http.Request) {
 	// Komdigi uses "CNAME lamanlabuh.aduankonten.id." but kresd only supports "CNAME ."
 	sendEvent("[INFO] Converting zone for kresd compatibility...")
 	convertedFile := tmpFile + ".converted"
-	converted, convertErr := convertRPZForKresd(tmpFile, convertedFile)
+	result, convertErr := convertRPZForKresd(tmpFile, convertedFile)
 	if convertErr != nil {
 		sendEvent(fmt.Sprintf("[WARN] Conversion error: %v — using raw zone", convertErr))
 		convertedFile = tmpFile
 	} else {
-		sendEvent(fmt.Sprintf("[OK] Converted %d CNAME records to NXDOMAIN format", converted))
+		sendEvent(fmt.Sprintf("[OK] Converted %d CNAME records to NXDOMAIN format", result.converted))
+		if result.skipped > 0 {
+			sendEvent(fmt.Sprintf("[INFO] Skipped %d entries with invalid domain names (non-ASCII, special chars)", result.skipped))
+		}
 		os.Remove(tmpFile)
 		tmpFile = convertedFile
 	}
@@ -213,10 +243,24 @@ func (s *Server) handleRPZSync(w http.ResponseWriter, r *http.Request) {
 	domainCount := countRPZDomains(tmpFile, cfg.ZoneName)
 	sendEvent(fmt.Sprintf("[OK] Found %d blocked domains", domainCount))
 
+	// Safety check: verify converted file has real content before replacing
+	tmpInfo, err := os.Stat(tmpFile)
+	if err != nil || tmpInfo.Size() < 1024 {
+		errMsg := fmt.Sprintf("Converted zone file too small (%d bytes) — aborting to protect existing zone", tmpInfo.Size())
+		sendEvent(fmt.Sprintf("[ERROR] %s", errMsg))
+		os.Remove(tmpFile)
+		s.updateRPZSyncStatus("error", errMsg, 0, 0, int(time.Since(startTime).Milliseconds()))
+		fmt.Fprintf(w, "event: error\ndata: %s\n\n", errMsg)
+		flusher.Flush()
+		return
+	}
+
 	// Atomic rename: tmp → final
 	if err := os.Rename(tmpFile, rpzFile); err != nil {
 		data, _ := os.ReadFile(tmpFile)
-		os.WriteFile(rpzFile, data, 0644)
+		if len(data) > 1024 { // only overwrite if we have real data
+			os.WriteFile(rpzFile, data, 0644)
+		}
 		os.Remove(tmpFile)
 	}
 
@@ -232,20 +276,15 @@ func (s *Server) handleRPZSync(w http.ResponseWriter, r *http.Request) {
 	sendEvent(fmt.Sprintf("[OK] Sync complete: %d domains, %.1f MB, %dms",
 		domainCount, float64(fileSize)/1024/1024, duration.Milliseconds()))
 
-	// If RPZ is enabled, regenerate kresd config (adds policy.rpz Lua) and restart
+	// If RPZ is enabled, regenerate kresd config (adds local-data.rpz YAML) and restart
 	if cfg.Enabled {
-		sendEvent("[INFO] Applying to DNS resolver via native RPZ policy...")
+		sendEvent("[INFO] Applying to DNS resolver via native RPZ (shared ruledb)...")
 		s.regenerateKresdConfig(true)
 		if name := findContainerName("kresd"); name != "" {
 			exec.Command("docker", "restart", name).Run()
 		}
-		// Check if workers were reduced
-		rpzFile := filepath.Join(s.cfg.ProjectDir, "config/kresd/rpz.zone")
-		if info, err := os.Stat(rpzFile); err == nil && info.Size() > 100*1024*1024 {
-			sendEvent("[INFO] Zone besar terdeteksi — kresd dibatasi 2 workers untuk hemat memory")
-		}
-		sendEvent("[OK] DNS resolver restarted — kresd sedang memuat RPZ zone ke trie...")
-		sendEvent(fmt.Sprintf("[INFO] Proses loading %d domain ke memori bisa memakan 1-5 menit. Pantau Kresd Memory di dashboard.", domainCount))
+		sendEvent("[OK] DNS resolver restarted — policy-loader sedang memuat RPZ zone ke ruledb...")
+		sendEvent(fmt.Sprintf("[INFO] Loading %d domain ke shared LMDB database. Proses ini berjalan di background.", domainCount))
 	} else {
 		sendEvent("[INFO] RPZ is disabled — zone file saved but not applied to resolver")
 	}
@@ -283,8 +322,9 @@ func (s *Server) updateRPZSyncStatus(status, errMsg string, domainCount int, fil
 }
 
 // regenerateKresdConfig rebuilds kresd YAML config.
-// Custom filter rules use local-data (small count).
-// RPZ uses native policy.rpz() Lua — kresd loads zone file with optimized trie, no YAML bloat.
+// Custom filter rules use local-data records (small count, inlined).
+// RPZ uses native local-data.rpz YAML — loaded once by policy-loader into shared LMDB ruledb,
+// then all workers read from the shared DB. No per-worker loading, no 60s timeout issue.
 func (s *Server) regenerateKresdConfig(includeRPZ bool) {
 	projectDir := s.cfg.ProjectDir
 	templatePath := filepath.Join(projectDir, "config/kresd/config.yaml.template")
@@ -306,17 +346,10 @@ func (s *Server) regenerateKresdConfig(includeRPZ bool) {
 		cacheSize = "8G"
 	}
 
-	// When RPZ is enabled with a large zone (17M+ domains), each kresd worker
-	// loads the entire zone file independently. 8 workers × ~2.5GB = 20GB OOM.
-	// Limit to 2 workers when RPZ is active to stay within 16GB RAM.
+	// With native YAML RPZ (local-data.rpz), the zone is loaded once by policy-loader
+	// into shared LMDB ruledb. Workers don't load the zone independently, so no OOM risk.
+	// We can use auto workers safely now.
 	workers := "auto"
-	if includeRPZ {
-		rpzFile := filepath.Join(projectDir, "config/kresd/rpz.zone")
-		if info, err := os.Stat(rpzFile); err == nil && info.Size() > 100*1024*1024 { // >100MB
-			workers = "2"
-			log.Printf("RPZ zone is %.0f MB — limiting kresd to 2 workers to prevent OOM", float64(info.Size())/1024/1024)
-		}
-	}
 
 	// Build subnet views
 	var subnetViews strings.Builder
@@ -329,22 +362,43 @@ func (s *Server) regenerateKresdConfig(includeRPZ bool) {
 		}
 	}
 
-	// Build local-data for CUSTOM filter rules only (small count, OK to inline)
+	// Build local-data section with custom filter rules + RPZ
 	var localData strings.Builder
 	ctx := context.Background()
 	rows, err := s.pg.Query(ctx,
 		"SELECT domain FROM filter_rules WHERE enabled = true AND action = 'block' ORDER BY domain")
 	customCount := 0
+
+	// Check if we need local-data section at all
+	hasCustomRules := false
+	hasRPZ := false
+	var domains []string
+
 	if err == nil {
 		defer rows.Close()
-		var domains []string
 		for rows.Next() {
 			var d string
 			rows.Scan(&d)
 			domains = append(domains, d)
 		}
-		if len(domains) > 0 {
-			localData.WriteString("local-data:\n")
+		hasCustomRules = len(domains) > 0
+		customCount = len(domains)
+	}
+
+	// Check RPZ zone file
+	rpzFile := "/etc/knot-resolver/rpz.zone"
+	localRpzFile := filepath.Join(projectDir, "config/kresd/rpz.zone")
+	if includeRPZ {
+		if info, err := os.Stat(localRpzFile); err == nil && info.Size() > 100 {
+			hasRPZ = true
+		}
+	}
+
+	if hasCustomRules || hasRPZ {
+		localData.WriteString("local-data:\n")
+
+		// Custom filter records (redirect to block page)
+		if hasCustomRules {
 			localData.WriteString("  records:\n")
 			for _, d := range domains {
 				localData.WriteString(fmt.Sprintf("    - owner: %s.\n      ttl: 60\n      rdata: '%s'\n", d, serverIP))
@@ -352,27 +406,13 @@ func (s *Server) regenerateKresdConfig(includeRPZ bool) {
 					localData.WriteString(fmt.Sprintf("    - owner: www.%s.\n      ttl: 60\n      rdata: '%s'\n", d, serverIP))
 				}
 			}
-			customCount = len(domains)
 		}
-	}
 
-	// Build RPZ Lua snippet — uses kresd's native policy.rpz()
-	// This loads the zone file into kresd's internal trie — ~10x more memory efficient
-	// than converting 500K domains to local-data YAML records
-	rpzLua := "-- RPZ disabled"
-	if includeRPZ {
-		rpzFile := "/etc/knot-resolver/rpz.zone"
-		// Check if zone file has content
-		localRpzFile := filepath.Join(projectDir, "config/kresd/rpz.zone")
-		if info, err := os.Stat(localRpzFile); err == nil && info.Size() > 100 {
-			rpzLua = fmt.Sprintf(
-				`-- RPZ Trust Positif Komdigi (native kresd policy)
-    -- policy.rpz loads zone file into optimized trie data structure
-    -- Auto file-watch: kresd reloads when file changes (no restart needed)
-    policy.add(policy.rpz(policy.DENY_MSG('Diblokir oleh DNS Filter - Komdigi Trust Positif'), '%s', true))`,
-				rpzFile)
-		} else {
-			rpzLua = "-- RPZ enabled but zone file empty/missing — run sync first"
+		// RPZ zone file — loaded by policy-loader into shared LMDB ruledb
+		// All workers read from shared DB, zone is loaded only ONCE
+		if hasRPZ {
+			localData.WriteString("  rpz:\n")
+			localData.WriteString(fmt.Sprintf("    - file: %s\n", rpzFile))
 		}
 	}
 
@@ -383,7 +423,6 @@ func (s *Server) regenerateKresdConfig(includeRPZ bool) {
 	config = strings.ReplaceAll(config, "__CACHE_SIZE__", cacheSize)
 	config = strings.ReplaceAll(config, "__SUBNET_VIEWS__", subnetViews.String())
 	config = strings.ReplaceAll(config, "__LOCAL_DATA__", localData.String())
-	config = strings.ReplaceAll(config, "__RPZ_LUA__", rpzLua)
 
 	os.WriteFile(configPath, []byte(config), 0644)
 }
@@ -391,16 +430,22 @@ func (s *Server) regenerateKresdConfig(includeRPZ bool) {
 // convertRPZForKresd converts custom CNAME targets to "CNAME ." (NXDOMAIN).
 // Komdigi RPZ uses "CNAME lamanlabuh.aduankonten.id." which kresd doesn't support.
 // Streams line-by-line to handle 1.4GB+ files without memory issues.
-func convertRPZForKresd(src, dst string) (int, error) {
+// convertResult holds stats from the conversion
+type convertResult struct {
+	converted int
+	skipped   int
+}
+
+func convertRPZForKresd(src, dst string) (convertResult, error) {
 	in, err := os.Open(src)
 	if err != nil {
-		return 0, err
+		return convertResult{}, err
 	}
 	defer in.Close()
 
 	out, err := os.Create(dst)
 	if err != nil {
-		return 0, err
+		return convertResult{}, err
 	}
 	defer out.Close()
 
@@ -409,15 +454,76 @@ func convertRPZForKresd(src, dst string) (int, error) {
 	scanner.Buffer(make([]byte, 64*1024), 64*1024)
 
 	converted := 0
+	skipped := 0
+	wroteSOA := false
+
 	for scanner.Scan() {
 		line := scanner.Text()
 
+		// Skip empty lines and comments — pass through
+		if len(line) == 0 || line[0] == ';' {
+			writer.WriteString(line)
+			writer.WriteString("\n")
+			continue
+		}
+
+		// Skip directives like $ORIGIN
+		if line[0] == '$' {
+			writer.WriteString(line)
+			writer.WriteString("\n")
+			continue
+		}
+
+		fields := strings.Fields(line)
+		if len(fields) < 4 {
+			continue
+		}
+
+		// Detect record type (typically field[3] after owner, TTL, class)
+		recType := ""
+		for _, f := range fields[1:] {
+			upper := strings.ToUpper(f)
+			if upper == "SOA" || upper == "NS" || upper == "CNAME" || upper == "A" || upper == "AAAA" || upper == "TXT" {
+				recType = upper
+				break
+			}
+		}
+
+		// Write exactly ONE SOA record (required by kresd RPZ parser)
+		// Skip NS records (kresd RPZ parser crashes on them)
+		// Skip duplicate SOA at end of AXFR
+		if recType == "SOA" {
+			if !wroteSOA {
+				writer.WriteString(line)
+				writer.WriteString("\n")
+				wroteSOA = true
+			}
+			continue
+		}
+		if recType == "NS" {
+			continue
+		}
+
+		// Only keep CNAME records (the actual RPZ rules)
+		if recType != "CNAME" {
+			skipped++
+			continue
+		}
+
+		// Validate domain name strictly for libknot compatibility.
+		// libknot crashes on invalid chars, labels starting/ending with hyphens, underscores, etc.
+		// Komdigi zone has ~1600 entries that fail strict validation.
+		owner := fields[0]
+		if !isValidRPZOwner(owner) {
+			skipped++
+			continue
+		}
+
 		// Convert custom CNAME targets to "." (NXDOMAIN)
+		// Komdigi uses "CNAME lamanlabuh.aduankonten.id." — kresd only supports "CNAME ."
 		// Skip rpz-passthru (whitelisted domains)
-		if strings.Contains(line, "CNAME") && !strings.Contains(line, "CNAME\t.") &&
-			!strings.Contains(line, "CNAME .") && !strings.Contains(strings.ToUpper(line), "RPZ-PASSTHRU") {
-			// Replace: "domain. TTL IN CNAME lamanlabuh.aduankonten.id." → "domain. TTL IN CNAME ."
-			fields := strings.Fields(line)
+		if !strings.Contains(line, "CNAME\t.") && !strings.Contains(line, "CNAME .") &&
+			!strings.Contains(strings.ToUpper(line), "RPZ-PASSTHRU") {
 			for i, f := range fields {
 				if strings.ToUpper(f) == "CNAME" && i+1 < len(fields) {
 					target := fields[i+1]
@@ -435,8 +541,20 @@ func convertRPZForKresd(src, dst string) (int, error) {
 		writer.WriteString("\n")
 	}
 
-	writer.Flush()
-	return converted, scanner.Err()
+	if skipped > 0 {
+		log.Printf("RPZ conversion: skipped %d entries (invalid names, unsupported record types)", skipped)
+	}
+
+	if err := writer.Flush(); err != nil {
+		return convertResult{}, fmt.Errorf("flush: %w", err)
+	}
+	if err := out.Sync(); err != nil {
+		return convertResult{}, fmt.Errorf("sync: %w", err)
+	}
+	if err := scanner.Err(); err != nil {
+		return convertResult{}, fmt.Errorf("scan: %w", err)
+	}
+	return convertResult{converted: converted, skipped: skipped}, nil
 }
 
 // countRPZDomains counts unique blocked domains by scanning the zone file line by line.
