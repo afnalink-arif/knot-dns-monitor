@@ -98,6 +98,12 @@ Or run non-interactively:
 ./install.sh --ip 10.0.0.1 --domain dns.example.com --subnets "10.0.0.0/24" --cache 4G
 ```
 
+To reinstall from scratch (removes all data and configs):
+
+```bash
+./install.sh --reinstall
+```
+
 ### Post-Install
 
 ```bash

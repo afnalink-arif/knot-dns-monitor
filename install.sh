@@ -30,6 +30,8 @@ ARG_CACHE=""
 ARG_ROLE=""
 ARG_NODE_NAME=""
 
+REINSTALL=0
+
 while [[ $# -gt 0 ]]; do
     case $1 in
         --ip)       ARG_IP="$2"; shift 2 ;;
@@ -38,6 +40,7 @@ while [[ $# -gt 0 ]]; do
         --cache)    ARG_CACHE="$2"; shift 2 ;;
         --role)     ARG_ROLE="$2"; shift 2 ;;
         --node-name) ARG_NODE_NAME="$2"; shift 2 ;;
+        --reinstall) REINSTALL=1; shift ;;
         --help|-h)
             echo "Usage: $0 [OPTIONS]"
             echo ""
@@ -48,6 +51,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --cache SIZE      DNS cache size (default: 8G)"
             echo "  --role ROLE       Cluster role: standalone, controller, agent"
             echo "  --node-name NAME  Node name for cluster identification"
+            echo "  --reinstall       Clean reinstall: stop services, remove volumes & configs, start fresh"
             echo "  -h, --help        Show this help"
             echo ""
             echo "If options are omitted, the installer will ask interactively."
@@ -64,6 +68,46 @@ echo -e "${BLUE}║   Knot DNS Manager - Installer v1.0      ║${NC}"
 echo -e "${BLUE}║   Knot Resolver 6.2 + Monitoring Stack   ║${NC}"
 echo -e "${BLUE}╚══════════════════════════════════════════╝${NC}"
 echo ""
+
+# ---- Reinstall: clean up previous installation ----
+if [[ "$REINSTALL" == "1" ]]; then
+    warn "Reinstall mode: this will remove all data (databases, configs, secrets)."
+    read -rp "  Are you sure? [y/N]: " confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        echo "Aborted."
+        exit 0
+    fi
+    info "Stopping services..."
+    docker compose down -v --remove-orphans 2>/dev/null || true
+    info "Removing generated configs and secrets..."
+    rm -f "${PROJECT_DIR}/config/kresd/config.yaml"
+    rm -f "${PROJECT_DIR}/config/kresd/rpz.zone"
+    rm -f "${PROJECT_DIR}/config/Caddyfile"
+    rm -f "${PROJECT_DIR}/.env"
+    rm -rf "${PROJECT_DIR}/secrets"
+    ok "Previous installation cleaned"
+elif docker compose ps --quiet 2>/dev/null | grep -q .; then
+    warn "Services are already running."
+    echo "  Options:"
+    echo "    1) Continue install (may fail if configs conflict)"
+    echo "    2) Reinstall fresh (removes all data)"
+    echo "    3) Abort"
+    read -rp "  Choose [1/2/3]: " choice
+    case "$choice" in
+        2)
+            info "Stopping services and removing volumes..."
+            docker compose down -v --remove-orphans 2>/dev/null || true
+            rm -f "${PROJECT_DIR}/config/kresd/config.yaml"
+            rm -f "${PROJECT_DIR}/config/kresd/rpz.zone"
+            rm -f "${PROJECT_DIR}/config/Caddyfile"
+            rm -f "${PROJECT_DIR}/.env"
+            rm -rf "${PROJECT_DIR}/secrets"
+            ok "Previous installation cleaned"
+            ;;
+        3) echo "Aborted."; exit 0 ;;
+        *) info "Continuing with existing state..." ;;
+    esac
+fi
 
 # ---- Check prerequisites ----
 info "Checking prerequisites..."
