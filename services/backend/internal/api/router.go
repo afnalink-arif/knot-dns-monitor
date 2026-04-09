@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -21,14 +22,15 @@ import (
 )
 
 type Server struct {
-	cfg          *config.Config
-	promURL      string
-	ch           driver.Conn
-	pg           *pgxpool.Pool
-	rdb          *redis.Client
-	httpClient   *http.Client
-	clusterRole  atomic.Value // stores current role string
-	pollerCancel context.CancelFunc
+	cfg            *config.Config
+	promURL        string
+	ch             driver.Conn
+	pg             *pgxpool.Pool
+	rdb            *redis.Client
+	httpClient     *http.Client
+	clusterRole    atomic.Value // stores current role string
+	pollerCancel   context.CancelFunc
+	maintenanceMu  sync.Mutex // shared lock: prevents RPZ sync and system update from running simultaneously
 }
 
 func NewRouter(cfg *config.Config) (http.Handler, func(), error) {
@@ -84,6 +86,10 @@ func NewRouter(cfg *config.Config) (http.Handler, func(), error) {
 	rpzAutoSyncCtx, rpzAutoSyncCancel := context.WithCancel(context.Background())
 	go srv.runRPZAutoSync(rpzAutoSyncCtx)
 
+	// Start auto-update background scheduler
+	autoUpdateCtx, autoUpdateCancel := context.WithCancel(context.Background())
+	go srv.runAutoUpdate(autoUpdateCtx)
+
 	r := chi.NewRouter()
 
 	// Middleware
@@ -124,6 +130,8 @@ func NewRouter(cfg *config.Config) (http.Handler, func(), error) {
 		r.Get("/update/check", srv.handleUpdateCheck)
 		r.Post("/update/execute", srv.handleUpdateExecute)
 		r.Get("/update/status", srv.handleUpdateStatus)
+		r.Get("/update/auto", srv.handleGetAutoUpdateConfig)
+		r.Put("/update/auto", srv.handleUpdateAutoUpdateConfig)
 
 		// DNS Lookup tool
 		r.Post("/dns/lookup", srv.handleDNSLookup)
@@ -250,6 +258,7 @@ func NewRouter(cfg *config.Config) (http.Handler, func(), error) {
 	})
 
 	cleanup := func() {
+		autoUpdateCancel()
 		rpzAutoSyncCancel()
 		if srv.pollerCancel != nil {
 			srv.pollerCancel()
@@ -375,12 +384,20 @@ func initPostgres(pool *pgxpool.Pool) error {
 			allowed_subnets TEXT NOT NULL DEFAULT '',
 			retention_query_days INT NOT NULL DEFAULT 30,
 			retention_metrics_days INT NOT NULL DEFAULT 15,
+			auto_update_enabled BOOLEAN NOT NULL DEFAULT false,
+			auto_update_hour INT NOT NULL DEFAULT 3,
+			auto_update_day INT NOT NULL DEFAULT 0,
+			last_auto_update TIMESTAMPTZ,
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
 		`INSERT INTO server_config (id) VALUES (1) ON CONFLICT DO NOTHING`,
 		`ALTER TABLE server_config ADD COLUMN IF NOT EXISTS allowed_subnets TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE server_config ADD COLUMN IF NOT EXISTS retention_query_days INT NOT NULL DEFAULT 30`,
 		`ALTER TABLE server_config ADD COLUMN IF NOT EXISTS retention_metrics_days INT NOT NULL DEFAULT 15`,
+		`ALTER TABLE server_config ADD COLUMN IF NOT EXISTS auto_update_enabled BOOLEAN NOT NULL DEFAULT false`,
+		`ALTER TABLE server_config ADD COLUMN IF NOT EXISTS auto_update_hour INT NOT NULL DEFAULT 3`,
+		`ALTER TABLE server_config ADD COLUMN IF NOT EXISTS auto_update_day INT NOT NULL DEFAULT 0`,
+		`ALTER TABLE server_config ADD COLUMN IF NOT EXISTS last_auto_update TIMESTAMPTZ`,
 		`CREATE TABLE IF NOT EXISTS cluster_metrics_cache (
 			node_id INT REFERENCES cluster_nodes(id) ON DELETE CASCADE,
 			metric_type VARCHAR(50) NOT NULL,

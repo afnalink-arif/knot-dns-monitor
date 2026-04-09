@@ -2,7 +2,7 @@ import { createSignal, onMount, Show, For, createMemo } from "solid-js";
 import { useSearchParams } from "@solidjs/router";
 import Layout from "~/components/Layout";
 import { authHeaders, getToken, logout } from "~/lib/auth";
-import { updateAPI, clusterAPI, servicesAPI, serverConfigAPI, type UpdateCheckResult, type ClusterConfig, type ClusterNode, type ServiceInfo, type ServerConfig } from "~/lib/api";
+import { updateAPI, clusterAPI, servicesAPI, serverConfigAPI, type UpdateCheckResult, type ClusterConfig, type ClusterNode, type ServiceInfo, type ServerConfig, type AutoUpdateConfig } from "~/lib/api";
 import { t } from "~/lib/i18n";
 
 type Tab = "account" | "users" | "server" | "update" | "cluster";
@@ -37,6 +37,9 @@ export default function SettingsPage() {
   const [updateDone, setUpdateDone] = createSignal(false);
   const [updateError, setUpdateError] = createSignal("");
   const [restarting, setRestarting] = createSignal(false);
+
+  // Auto-update
+  const [autoUpdateCfg, setAutoUpdateCfg] = createSignal<AutoUpdateConfig | null>(null);
 
   // Services
   const [services, setServices] = createSignal<ServiceInfo[]>([]);
@@ -73,6 +76,7 @@ export default function SettingsPage() {
     loadClusterConfig();
     loadServices();
     loadServerConfig();
+    loadAutoUpdateConfig();
   });
 
   const loadServices = async () => {
@@ -81,6 +85,10 @@ export default function SettingsPage() {
 
   const loadServerConfig = async () => {
     try { setSrvConfig(await serverConfigAPI.get()); } catch {}
+  };
+
+  const loadAutoUpdateConfig = async () => {
+    try { setAutoUpdateCfg(await updateAPI.getAutoConfig()); } catch {}
   };
 
   const showSrvMsg = (text: string, error = false) => {
@@ -632,6 +640,109 @@ export default function SettingsPage() {
                     <Show when={restarting()}>
                       <div class="text-amber-400 animate-pulse mt-1">Restarting services...</div>
                     </Show>
+                  </div>
+                </Show>
+              </div>
+            </SectionCard>
+
+            <SectionCard title={t("settings.auto_update")} description={t("settings.auto_update_desc")}>
+              <div class="space-y-4">
+                {/* Enable/disable toggle */}
+                <div class="flex items-center justify-between">
+                  <div>
+                    <p class="text-xs text-white font-medium">{t("settings.auto_update")}</p>
+                    <p class="text-[10px] text-slate-500">
+                      <Show when={autoUpdateCfg()?.last_auto_update}>
+                        {t("settings.last_auto_update")} {new Date(autoUpdateCfg()!.last_auto_update!).toLocaleString()}
+                      </Show>
+                      <Show when={!autoUpdateCfg()?.last_auto_update}>
+                        {t("settings.last_auto_update")} {t("settings.never")}
+                      </Show>
+                    </p>
+                  </div>
+                  <button
+                    onClick={async () => {
+                      const cur = autoUpdateCfg();
+                      if (!cur) return;
+                      const val = !cur.auto_update_enabled;
+                      try {
+                        await updateAPI.updateAutoConfig({ auto_update_enabled: val } as any);
+                        setAutoUpdateCfg({ ...cur, auto_update_enabled: val });
+                        showSrvMsg(val ? t("settings.auto_update_enabled") : t("settings.auto_update_disabled"));
+                      } catch (err: any) { showSrvMsg(err.message, true); }
+                    }}
+                    class={`relative w-10 h-5 rounded-full transition-colors ${autoUpdateCfg()?.auto_update_enabled ? "bg-blue-600" : "bg-slate-600"}`}
+                  >
+                    <span class={`absolute top-0.5 w-4 h-4 bg-white rounded-full transition-transform ${autoUpdateCfg()?.auto_update_enabled ? "left-5" : "left-0.5"}`} />
+                  </button>
+                </div>
+
+                {/* Schedule options */}
+                <Show when={autoUpdateCfg()?.auto_update_enabled}>
+                  <div class="flex flex-wrap gap-3">
+                    <div class="flex items-center gap-1.5">
+                      <label class="text-[10px] text-slate-400">{t("settings.update_frequency")}</label>
+                      <select
+                        value={autoUpdateCfg()?.auto_update_day ?? 0}
+                        onChange={async (e) => {
+                          const day = parseInt(e.currentTarget.value);
+                          const cur = autoUpdateCfg();
+                          if (!cur) return;
+                          try {
+                            await updateAPI.updateAutoConfig({ auto_update_day: day } as any);
+                            setAutoUpdateCfg({ ...cur, auto_update_day: day });
+                          } catch (err: any) { showSrvMsg(err.message, true); }
+                        }}
+                        class="bg-slate-900 text-white text-xs rounded-lg px-2 py-1.5 border border-slate-600"
+                      >
+                        <option value={0}>{t("settings.daily")}</option>
+                        <option value={1}>{t("settings.weekly_mon")}</option>
+                        <option value={2}>{t("settings.weekly_tue")}</option>
+                        <option value={3}>{t("settings.weekly_wed")}</option>
+                        <option value={4}>{t("settings.weekly_thu")}</option>
+                        <option value={5}>{t("settings.weekly_fri")}</option>
+                        <option value={6}>{t("settings.weekly_sat")}</option>
+                        <option value={7}>{t("settings.weekly_sun")}</option>
+                      </select>
+                    </div>
+                    <div class="flex items-center gap-1.5">
+                      <label class="text-[10px] text-slate-400">{t("settings.update_hour")}</label>
+                      <select
+                        value={autoUpdateCfg()?.auto_update_hour ?? 3}
+                        onChange={async (e) => {
+                          const hour = parseInt(e.currentTarget.value);
+                          const cur = autoUpdateCfg();
+                          if (!cur) return;
+                          try {
+                            await updateAPI.updateAutoConfig({ auto_update_hour: hour } as any);
+                            setAutoUpdateCfg({ ...cur, auto_update_hour: hour });
+                          } catch (err: any) { showSrvMsg(err.message, true); }
+                        }}
+                        class="bg-slate-900 text-white text-xs rounded-lg px-2 py-1.5 border border-slate-600"
+                      >
+                        {Array.from({ length: 24 }, (_, i) => (
+                          <option value={i}>{i.toString().padStart(2, "0")}:00</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div class="p-2 bg-blue-500/5 rounded-lg border border-blue-500/10">
+                    <p class="text-[10px] text-slate-400">
+                      {(() => {
+                        const cfg = autoUpdateCfg()!;
+                        const h = cfg.auto_update_hour.toString().padStart(2, "0");
+                        const tz = srvConfig()?.timezone || "Asia/Jakarta";
+                        const days = ["", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+                        const freq = cfg.auto_update_day === 0
+                          ? `Daily at ${h}:00 ${tz}`
+                          : `Every ${days[cfg.auto_update_day]} at ${h}:00 ${tz}`;
+                        return freq;
+                      })()}
+                    </p>
+                    <p class="text-[10px] text-slate-500 mt-0.5">
+                      Will not run if RPZ sync is in progress
+                    </p>
                   </div>
                 </Show>
               </div>

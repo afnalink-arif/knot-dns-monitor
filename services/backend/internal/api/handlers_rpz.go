@@ -699,8 +699,14 @@ func (s *Server) runRPZAutoSync(ctx context.Context) {
 				continue
 			}
 
+			// Acquire maintenance lock to prevent conflict with auto-update
+			if !s.maintenanceMu.TryLock() {
+				log.Println("RPZ auto-sync: skipped, maintenance lock held (update in progress?)")
+				continue
+			}
 			log.Printf("RPZ auto-sync triggered (%02d:00 %s, interval: %dh)", cfg.AutoSyncHour, tz, cfg.AutoSyncIntervalHrs)
 			s.doRPZSyncBackground()
+			s.maintenanceMu.Unlock()
 		}
 	}
 }

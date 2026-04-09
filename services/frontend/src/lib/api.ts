@@ -117,7 +117,21 @@ export interface ServerConfig {
 export const updateAPI = {
   check: () => fetchAPI<UpdateCheckResult>("/api/admin/update/check"),
   status: () => fetchAPI<{ in_progress: boolean }>("/api/admin/update/status"),
+  getAutoConfig: () => fetchAPI<AutoUpdateConfig>("/api/admin/update/auto"),
+  updateAutoConfig: (data: Partial<AutoUpdateConfig>) =>
+    fetch("/api/admin/update/auto", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify(data),
+    }).then(async (r) => { const d = await r.json(); if (!r.ok) throw new Error(d.error); return d; }),
 };
+
+export interface AutoUpdateConfig {
+  auto_update_enabled: boolean;
+  auto_update_hour: number;
+  auto_update_day: number;
+  last_auto_update: string | null;
+}
 
 // DNS Filtering API
 export const filterAPI = {
