@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/afnalink-arif/knot-dns-manager/main/.github/logo.svg" width="80" alt="Knot DNS Manager" />
+  <img src="https://raw.githubusercontent.com/afnalink-arif/knot-dns-manager/main/.github/logo-kdm.png" width="200" alt="Knot DNS Manager" />
 </p>
 
 <h1 align="center">Knot DNS Manager</h1>
@@ -75,6 +75,16 @@ Or via CLI:
 ```bash
 ./update.sh
 ```
+
+## Contributing
+
+Contributions are welcome! Feel free to open issues, submit pull requests, or suggest features.
+
+## About
+
+Built with curiosity and a lot of help from AI — this project was developed by someone who's still learning, with assistance from [Claude](https://claude.ai/) (Anthropic) and [Gemini](https://gemini.google.com/) (Google). The logo was generated using Gemini.
+
+If a self-taught developer with AI tools can build this, imagine what you could build.
 
 ## License
 
