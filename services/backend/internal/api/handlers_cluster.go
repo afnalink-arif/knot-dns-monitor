@@ -376,18 +376,31 @@ func (s *Server) handleClusterOverview(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// getLocalOverviewMetrics fetches overview metrics from Prometheus for the local node.
+// getLocalOverviewMetrics fetches overview metrics from Prometheus for the local node,
+// using the same queries as handleMetricsOverview so the format matches agent responses.
 func (s *Server) getLocalOverviewMetrics(ctx context.Context) *json.RawMessage {
-	resp, err := s.httpClient.Get(fmt.Sprintf("%s/api/v1/query?query=sum(rate(kresd_request_total[1m]))", s.promURL))
-	if err != nil {
+	queries := map[string]string{
+		"qps":              `sum(rate(kresd_query_total[1m]))`,
+		"avg_latency_ms":   `histogram_quantile(0.5, rate(kresd_answer_duration_seconds_bucket[5m])) * 1000`,
+		"cache_hit_ratio":  `rate(kresd_cache_hit_total[5m]) / (rate(kresd_cache_hit_total[5m]) + rate(kresd_cache_miss_total[5m]))`,
+		"dnssec_secure_pct": `rate(kresd_answer_total{dnssec="secure"}[5m]) / rate(kresd_answer_total[5m]) * 100`,
+	}
+
+	results := map[string]json.RawMessage{}
+	for name, query := range queries {
+		data, err := s.promInstantQuery(query)
+		if err != nil {
+			continue
+		}
+		results[name] = data
+	}
+
+	if len(results) == 0 {
 		return nil
 	}
-	defer resp.Body.Close()
-
-	// Build a metrics response matching the agent format
-	data, _ := io.ReadAll(resp.Body)
-	raw := json.RawMessage(data)
-	return &raw
+	raw, _ := json.Marshal(results)
+	msg := json.RawMessage(raw)
+	return &msg
 }
 
 // --- Remote update proxy ---
