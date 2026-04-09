@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+
 	"net/http"
 	"strconv"
 	"strings"
@@ -308,45 +309,85 @@ func (s *Server) handleNodeMetrics(w http.ResponseWriter, r *http.Request) {
 // --- Cluster overview (aggregated) ---
 
 func (s *Server) handleClusterOverview(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.pg.Query(r.Context(),
-		"SELECT id, name, domain, status, version, last_seen_at, last_error FROM cluster_nodes ORDER BY id")
-	if err != nil {
-		http.Error(w, `{"error":"query failed"}`, http.StatusInternalServerError)
-		return
-	}
-	defer rows.Close()
-
 	type NodeOverview struct {
 		ID         int              `json:"id"`
 		Name       string           `json:"name"`
 		Domain     string           `json:"domain"`
 		Status     string           `json:"status"`
 		Version    string           `json:"version"`
+		IsLocal    bool             `json:"is_local"`
 		LastSeenAt *time.Time       `json:"last_seen_at"`
 		LastError  string           `json:"last_error"`
 		Metrics    *json.RawMessage `json:"metrics"`
 	}
 
 	nodes := []NodeOverview{}
-	for rows.Next() {
-		var n NodeOverview
-		rows.Scan(&n.ID, &n.Name, &n.Domain, &n.Status, &n.Version, &n.LastSeenAt, &n.LastError)
 
-		// Get cached metrics
-		var data json.RawMessage
-		err := s.pg.QueryRow(r.Context(),
-			"SELECT data FROM cluster_metrics_cache WHERE node_id = $1 AND metric_type = 'overview'", n.ID,
-		).Scan(&data)
-		if err == nil {
-			n.Metrics = &data
+	// Include local/controller node
+	var localName, localDomain string
+	s.pg.QueryRow(r.Context(),
+		"SELECT node_name, node_domain FROM cluster_config WHERE id = 1").Scan(&localName, &localDomain)
+	if localName == "" {
+		localName = "Controller (local)"
+	}
+
+	now := time.Now()
+	localNode := NodeOverview{
+		ID:         0,
+		Name:       localName,
+		Domain:     localDomain,
+		Status:     "online",
+		Version:    s.cfg.Version,
+		IsLocal:    true,
+		LastSeenAt: &now,
+	}
+
+	// Get local metrics from Prometheus
+	localMetrics := s.getLocalOverviewMetrics(r.Context())
+	if localMetrics != nil {
+		localNode.Metrics = localMetrics
+	}
+	nodes = append(nodes, localNode)
+
+	// Remote agent nodes
+	rows, err := s.pg.Query(r.Context(),
+		"SELECT id, name, domain, status, version, last_seen_at, last_error FROM cluster_nodes ORDER BY id")
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var n NodeOverview
+			rows.Scan(&n.ID, &n.Name, &n.Domain, &n.Status, &n.Version, &n.LastSeenAt, &n.LastError)
+
+			// Get cached metrics
+			var data json.RawMessage
+			err := s.pg.QueryRow(r.Context(),
+				"SELECT data FROM cluster_metrics_cache WHERE node_id = $1 AND metric_type = 'overview'", n.ID,
+			).Scan(&data)
+			if err == nil {
+				n.Metrics = &data
+			}
+			nodes = append(nodes, n)
 		}
-		nodes = append(nodes, n)
 	}
 
 	writeJSON(w, map[string]interface{}{
 		"nodes":      nodes,
 		"node_count": len(nodes),
 	})
+}
+
+// getLocalOverviewMetrics fetches overview metrics from Prometheus for the local node.
+func (s *Server) getLocalOverviewMetrics(ctx context.Context) *json.RawMessage {
+	resp, err := s.httpClient.Get(fmt.Sprintf("%s/api/v1/query?query=sum(rate(kresd_request_total[1m]))", s.promURL))
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+
+	// Build a metrics response matching the agent format
+	data, _ := io.ReadAll(resp.Body)
+	raw := json.RawMessage(data)
+	return &raw
 }
 
 // --- Remote update proxy ---

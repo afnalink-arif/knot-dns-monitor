@@ -76,12 +76,8 @@ export default function LoginPage() {
         <div class="absolute inset-0 bg-gradient-to-br from-blue-600/10 via-transparent to-blue-900/10" />
 
         <div class="relative z-10 px-16 max-w-lg">
-          <div class="flex items-center gap-4 mb-8">
-            <BrandLogo class="w-14 h-14" />
-            <div>
-              <h1 class="text-3xl font-bold text-white tracking-tight">Knot DNS</h1>
-              <p class="text-sm font-medium text-blue-400/80 tracking-wider uppercase">Manager</p>
-            </div>
+          <div class="mb-8">
+            <img src="/logo-kdm.png" alt="Knot DNS Manager" class="h-16 object-contain" />
           </div>
           <p class="text-lg text-slate-400 leading-relaxed mb-8">
             {t("login.tagline")}
@@ -107,8 +103,7 @@ export default function LoginPage() {
         <div class="w-full max-w-sm">
           {/* Mobile logo */}
           <div class="lg:hidden text-center mb-8">
-            <BrandLogo class="w-12 h-12 mx-auto mb-3" />
-            <h1 class="text-xl font-bold text-white tracking-tight">Knot DNS Manager</h1>
+            <img src="/logo-kdm.png" alt="Knot DNS Manager" class="h-12 object-contain mx-auto" />
           </div>
 
           <div class="mb-6">
