@@ -373,10 +373,14 @@ func initPostgres(pool *pgxpool.Pool) error {
 			id INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
 			timezone VARCHAR(50) NOT NULL DEFAULT 'Asia/Jakarta',
 			allowed_subnets TEXT NOT NULL DEFAULT '',
+			retention_query_days INT NOT NULL DEFAULT 30,
+			retention_metrics_days INT NOT NULL DEFAULT 15,
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
 		`INSERT INTO server_config (id) VALUES (1) ON CONFLICT DO NOTHING`,
 		`ALTER TABLE server_config ADD COLUMN IF NOT EXISTS allowed_subnets TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE server_config ADD COLUMN IF NOT EXISTS retention_query_days INT NOT NULL DEFAULT 30`,
+		`ALTER TABLE server_config ADD COLUMN IF NOT EXISTS retention_metrics_days INT NOT NULL DEFAULT 15`,
 		`CREATE TABLE IF NOT EXISTS cluster_metrics_cache (
 			node_id INT REFERENCES cluster_nodes(id) ON DELETE CASCADE,
 			metric_type VARCHAR(50) NOT NULL,

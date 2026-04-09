@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -13,8 +14,10 @@ import (
 )
 
 type ServerConfig struct {
-	Timezone       string   `json:"timezone"`
-	AllowedSubnets []string `json:"allowed_subnets"`
+	Timezone              string   `json:"timezone"`
+	AllowedSubnets        []string `json:"allowed_subnets"`
+	RetentionQueryDays    int      `json:"retention_query_days"`
+	RetentionMetricsDays  int      `json:"retention_metrics_days"`
 }
 
 func (s *Server) getServerTimezone() string {
@@ -87,12 +90,15 @@ func parseSubnetsFromKresdConfig(path string) []string {
 
 func (s *Server) handleGetServerConfig(w http.ResponseWriter, r *http.Request) {
 	cfg := ServerConfig{
-		Timezone:       "Asia/Jakarta",
-		AllowedSubnets: []string{},
+		Timezone:             "Asia/Jakarta",
+		AllowedSubnets:       []string{},
+		RetentionQueryDays:   30,
+		RetentionMetricsDays: 15,
 	}
 
 	s.pg.QueryRow(r.Context(),
-		`SELECT timezone FROM server_config WHERE id = 1`).Scan(&cfg.Timezone)
+		`SELECT timezone, retention_query_days, retention_metrics_days FROM server_config WHERE id = 1`,
+	).Scan(&cfg.Timezone, &cfg.RetentionQueryDays, &cfg.RetentionMetricsDays)
 
 	cfg.AllowedSubnets = s.getAllowedSubnets()
 	if cfg.AllowedSubnets == nil {
@@ -104,8 +110,10 @@ func (s *Server) handleGetServerConfig(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleUpdateServerConfig(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Timezone       *string  `json:"timezone"`
-		AllowedSubnets []string `json:"allowed_subnets"`
+		Timezone             *string  `json:"timezone"`
+		AllowedSubnets       []string `json:"allowed_subnets"`
+		RetentionQueryDays   *int     `json:"retention_query_days"`
+		RetentionMetricsDays *int     `json:"retention_metrics_days"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
@@ -137,7 +145,48 @@ func (s *Server) handleUpdateServerConfig(w http.ResponseWriter, r *http.Request
 		log.Printf("Allowed subnets updated: %s", subnets)
 	}
 
+	if req.RetentionQueryDays != nil {
+		days := *req.RetentionQueryDays
+		if days < 1 { days = 1 }
+		if days > 365 { days = 365 }
+		s.pg.Exec(ctx, "UPDATE server_config SET retention_query_days = $1, updated_at = NOW() WHERE id = 1", days)
+
+		// Update ClickHouse TTL
+		alterTTL := fmt.Sprintf("ALTER TABLE dnsmonitor.dns_queries MODIFY TTL toDate(timestamp) + INTERVAL %d DAY", days)
+		s.ch.Exec(ctx, alterTTL)
+		log.Printf("ClickHouse query retention updated to %d days", days)
+	}
+
+	if req.RetentionMetricsDays != nil {
+		days := *req.RetentionMetricsDays
+		if days < 1 { days = 1 }
+		if days > 365 { days = 365 }
+		s.pg.Exec(ctx, "UPDATE server_config SET retention_metrics_days = $1, updated_at = NOW() WHERE id = 1", days)
+
+		// Update Prometheus retention via docker-compose restart with new flag
+		// Prometheus reads retention from command-line args, so we update docker-compose.yml
+		composeFile := filepath.Join(s.cfg.ProjectDir, "docker-compose.yml")
+		updatePrometheusRetention(composeFile, days)
+		if name := findContainerName("prometheus"); name != "" {
+			exec.Command("docker", "restart", name).Run()
+		}
+		log.Printf("Prometheus retention updated to %d days", days)
+	}
+
 	writeJSON(w, map[string]string{"message": "Server config updated"})
+}
+
+// updatePrometheusRetention modifies the retention.time flag in docker-compose.yml
+func updatePrometheusRetention(composePath string, days int) {
+	data, err := os.ReadFile(composePath)
+	if err != nil {
+		log.Printf("Failed to read docker-compose.yml: %v", err)
+		return
+	}
+	content := string(data)
+	re := regexp.MustCompile(`--storage\.tsdb\.retention\.time=\d+d`)
+	content = re.ReplaceAllString(content, fmt.Sprintf("--storage.tsdb.retention.time=%dd", days))
+	os.WriteFile(composePath, []byte(content), 0644)
 }
 
 var validTimezones = map[string]bool{

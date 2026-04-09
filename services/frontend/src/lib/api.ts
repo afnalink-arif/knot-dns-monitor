@@ -109,6 +109,8 @@ export const serverConfigAPI = {
 export interface ServerConfig {
   timezone: string;
   allowed_subnets: string[];
+  retention_query_days: number;
+  retention_metrics_days: number;
 }
 
 // Admin Update API

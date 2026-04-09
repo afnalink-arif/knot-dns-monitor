@@ -426,6 +426,65 @@ export default function SettingsPage() {
               </select>
             </SectionCard>
 
+            <SectionCard title={t("settings.data_retention")} description={t("settings.data_retention_desc")}>
+              <div class="space-y-4">
+                <div class="flex items-center justify-between">
+                  <div>
+                    <p class="text-xs text-white font-medium">{t("settings.query_logs")}</p>
+                    <p class="text-[10px] text-slate-500">dns_queries, top_domains</p>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <select
+                      value={srvConfig()?.retention_query_days || 30}
+                      onChange={async (e) => {
+                        const days = parseInt(e.currentTarget.value);
+                        try {
+                          await serverConfigAPI.update({ retention_query_days: days } as any);
+                          setSrvConfig((prev) => prev ? { ...prev, retention_query_days: days } : prev);
+                          showSrvMsg(t("settings.retention_updated"));
+                        } catch (err: any) { showSrvMsg(err.message, true); }
+                      }}
+                      class="bg-slate-900 text-white text-xs rounded-lg px-3 py-1.5 border border-slate-600 w-32"
+                    >
+                      <option value={7}>7 {t("settings.days")}</option>
+                      <option value={14}>14 {t("settings.days")}</option>
+                      <option value={30}>30 {t("settings.days")}</option>
+                      <option value={60}>60 {t("settings.days")}</option>
+                      <option value={90}>90 {t("settings.days")}</option>
+                      <option value={180}>180 {t("settings.days")}</option>
+                      <option value={365}>365 {t("settings.days")}</option>
+                    </select>
+                  </div>
+                </div>
+                <div class="flex items-center justify-between">
+                  <div>
+                    <p class="text-xs text-white font-medium">{t("settings.metrics")}</p>
+                    <p class="text-[10px] text-slate-500">QPS, latency, cache, system</p>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <select
+                      value={srvConfig()?.retention_metrics_days || 15}
+                      onChange={async (e) => {
+                        const days = parseInt(e.currentTarget.value);
+                        try {
+                          await serverConfigAPI.update({ retention_metrics_days: days } as any);
+                          setSrvConfig((prev) => prev ? { ...prev, retention_metrics_days: days } : prev);
+                          showSrvMsg(t("settings.retention_updated"));
+                        } catch (err: any) { showSrvMsg(err.message, true); }
+                      }}
+                      class="bg-slate-900 text-white text-xs rounded-lg px-3 py-1.5 border border-slate-600 w-32"
+                    >
+                      <option value={7}>7 {t("settings.days")}</option>
+                      <option value={15}>15 {t("settings.days")}</option>
+                      <option value={30}>30 {t("settings.days")}</option>
+                      <option value={60}>60 {t("settings.days")}</option>
+                      <option value={90}>90 {t("settings.days")}</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+            </SectionCard>
+
             <SectionCard title={t("settings.allowed_subnets")} description={t("settings.allowed_subnets_desc")}>
               <div class="space-y-2 mb-4">
                 <For each={srvConfig()?.allowed_subnets || []} fallback={
