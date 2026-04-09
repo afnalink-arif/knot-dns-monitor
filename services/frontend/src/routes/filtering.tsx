@@ -478,6 +478,114 @@ export default function FilteringPage() {
                   Refresh
                 </button>
               </div>
+
+              {/* Auto-sync */}
+              <div class="mt-4 pt-4 border-t border-slate-700">
+                <div class="flex items-center justify-between">
+                  <div>
+                    <h4 class="text-xs font-medium text-white">Auto Sync</h4>
+                    <p class="text-[10px] text-slate-500 mt-0.5">Sinkronisasi zone otomatis secara berkala</p>
+                  </div>
+                  <button
+                    onClick={async () => {
+                      const current = rpzConfig();
+                      if (!current) return;
+                      const newVal = !current.auto_sync_enabled;
+                      try {
+                        await rpzAPI.updateConfig({ auto_sync_enabled: newVal } as any);
+                        setRpzConfig({ ...current, auto_sync_enabled: newVal });
+                        showMsg(newVal ? "Auto sync diaktifkan" : "Auto sync dinonaktifkan");
+                      } catch (err: any) { showMsg(err.message, true); }
+                    }}
+                    class={`relative w-10 h-5 rounded-full transition-colors ${rpzConfig()?.auto_sync_enabled ? "bg-blue-600" : "bg-slate-600"}`}
+                  >
+                    <span class={`absolute top-0.5 w-4 h-4 bg-white rounded-full transition-transform ${rpzConfig()?.auto_sync_enabled ? "left-5" : "left-0.5"}`} />
+                  </button>
+                </div>
+                <Show when={rpzConfig()?.auto_sync_enabled}>
+                  <div class="mt-3 flex flex-wrap items-center gap-3">
+                    <div class="flex items-center gap-1.5">
+                      <label class="text-[10px] text-slate-400">Setiap:</label>
+                      <select
+                        value={rpzConfig()?.auto_sync_interval_hours || 24}
+                        onChange={async (e) => {
+                          const hours = parseInt(e.currentTarget.value);
+                          const current = rpzConfig();
+                          if (!current) return;
+                          try {
+                            await rpzAPI.updateConfig({ auto_sync_interval_hours: hours });
+                            setRpzConfig({ ...current, auto_sync_interval_hours: hours });
+                            showMsg(`Interval auto sync: ${hours} jam`);
+                          } catch (err: any) { showMsg(err.message, true); }
+                        }}
+                        class="bg-slate-700 text-white text-xs rounded-md px-2 py-1 border border-slate-600"
+                      >
+                        <option value={6}>6 jam</option>
+                        <option value={12}>12 jam</option>
+                        <option value={24}>24 jam</option>
+                        <option value={48}>2 hari</option>
+                        <option value={72}>3 hari</option>
+                        <option value={168}>7 hari</option>
+                      </select>
+                    </div>
+                    <div class="flex items-center gap-1.5">
+                      <label class="text-[10px] text-slate-400">Jam sync (WIB):</label>
+                      <select
+                        value={rpzConfig()?.auto_sync_hour ?? 2}
+                        onChange={async (e) => {
+                          const hour = parseInt(e.currentTarget.value);
+                          const current = rpzConfig();
+                          if (!current) return;
+                          try {
+                            await rpzAPI.updateConfig({ auto_sync_hour: hour });
+                            setRpzConfig({ ...current, auto_sync_hour: hour });
+                            showMsg(`Jam sync: ${hour.toString().padStart(2, "0")}:00 WIB`);
+                          } catch (err: any) { showMsg(err.message, true); }
+                        }}
+                        class="bg-slate-700 text-white text-xs rounded-md px-2 py-1 border border-slate-600"
+                      >
+                        {Array.from({ length: 24 }, (_, i) => (
+                          <option value={i}>{i.toString().padStart(2, "0")}:00</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                  <div class="mt-2 p-2 bg-slate-700/30 rounded-lg">
+                    <p class="text-[10px] text-slate-400">
+                      {(() => {
+                        const cfg = rpzConfig()!;
+                        const h = (cfg.auto_sync_hour ?? 2).toString().padStart(2, "0");
+                        const interval = cfg.auto_sync_interval_hours || 24;
+                        let desc = `Sync otomatis jam ${h}:00 WIB`;
+                        if (interval <= 24) desc += `, setiap ${interval} jam`;
+                        else desc += `, setiap ${interval / 24} hari`;
+                        return desc;
+                      })()}
+                    </p>
+                    <Show when={rpzConfig()?.last_sync}>
+                      <p class="text-[10px] text-slate-500 mt-1">
+                        Sync berikutnya: {(() => {
+                          const cfg = rpzConfig()!;
+                          const lastSync = new Date(cfg.last_sync!);
+                          const intervalMs = cfg.auto_sync_interval_hours * 3600000;
+                          const nextByInterval = new Date(lastSync.getTime() + intervalMs);
+                          const now = new Date();
+
+                          // Find next occurrence of preferred hour (WIB = UTC+7)
+                          const preferredHour = cfg.auto_sync_hour ?? 2;
+                          const nowWIB = new Date(now.getTime() + 7 * 3600000);
+                          let nextRun = new Date(Date.UTC(nowWIB.getUTCFullYear(), nowWIB.getUTCMonth(), nowWIB.getUTCDate(), preferredHour - 7, 0, 0));
+                          if (nextRun <= now) nextRun = new Date(nextRun.getTime() + 86400000);
+
+                          // Sync runs when BOTH conditions met: interval elapsed AND preferred hour
+                          const effectiveNext = nextRun > nextByInterval ? nextRun : nextByInterval;
+                          return effectiveNext.toLocaleString("id-ID", { timeZone: "Asia/Jakarta" });
+                        })()}
+                      </p>
+                    </Show>
+                  </div>
+                </Show>
+              </div>
             </div>
 
             {/* Stats */}

@@ -80,6 +80,10 @@ func NewRouter(cfg *config.Config) (http.Handler, func(), error) {
 	// Initialize cluster role from DB (or seed from env)
 	srv.initClusterRole()
 
+	// Start RPZ auto-sync background scheduler
+	rpzAutoSyncCtx, rpzAutoSyncCancel := context.WithCancel(context.Background())
+	go srv.runRPZAutoSync(rpzAutoSyncCtx)
+
 	r := chi.NewRouter()
 
 	// Middleware
@@ -234,6 +238,7 @@ func NewRouter(cfg *config.Config) (http.Handler, func(), error) {
 	})
 
 	cleanup := func() {
+		rpzAutoSyncCancel()
 		if srv.pollerCancel != nil {
 			srv.pollerCancel()
 		}
@@ -287,8 +292,15 @@ func initPostgres(pool *pgxpool.Pool) error {
 			domain_count INT NOT NULL DEFAULT 0,
 			file_size_bytes BIGINT NOT NULL DEFAULT 0,
 			sync_duration_ms INT NOT NULL DEFAULT 0,
+			auto_sync_enabled BOOLEAN NOT NULL DEFAULT false,
+			auto_sync_interval_hours INT NOT NULL DEFAULT 24,
+			auto_sync_hour INT NOT NULL DEFAULT 2,
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
+		// Migrate: add auto_sync columns if missing
+		`ALTER TABLE rpz_config ADD COLUMN IF NOT EXISTS auto_sync_enabled BOOLEAN NOT NULL DEFAULT false`,
+		`ALTER TABLE rpz_config ADD COLUMN IF NOT EXISTS auto_sync_interval_hours INT NOT NULL DEFAULT 24`,
+		`ALTER TABLE rpz_config ADD COLUMN IF NOT EXISTS auto_sync_hour INT NOT NULL DEFAULT 2`,
 		// Seed rpz_config row + migrate old master_servers
 		`INSERT INTO rpz_config (id, master_servers) VALUES (1, '139.255.196.202,182.23.79.202,103.154.123.130') ON CONFLICT DO NOTHING`,
 		`UPDATE rpz_config SET master_servers = '139.255.196.202,182.23.79.202,103.154.123.130'

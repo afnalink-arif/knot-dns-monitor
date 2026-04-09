@@ -133,6 +133,7 @@ if [[ -f config/kresd/config.yaml.template ]]; then
     fi
 
     TEMP_CONFIG=$(mktemp)
+    trap 'rm -f "$TEMP_CONFIG"' EXIT
     while IFS= read -r line; do
         if [[ "$line" == *"__SUBNET_VIEWS__"* ]]; then
             printf '%s' "$SUBNET_VIEWS"
@@ -157,6 +158,12 @@ info "Rebuilding custom images..."
 export APP_VERSION=$(cat VERSION 2>/dev/null || echo "dev")
 docker compose build --parallel 2>&1 | tail -5
 ok "Images rebuilt (version: ${APP_VERSION})"
+
+# Cleanup: remove dangling images and build cache from previous builds
+info "Cleaning up old images and build cache..."
+docker image prune -f >/dev/null 2>&1 || true
+docker builder prune -f --filter "until=24h" >/dev/null 2>&1 || true
+ok "Cleanup done"
 
 # ---- Step 4: Rolling restart ----
 info "Restarting services..."

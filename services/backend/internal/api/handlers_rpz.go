@@ -42,29 +42,36 @@ func isValidRPZOwner(owner string) bool {
 }
 
 type RPZConfig struct {
-	Enabled        bool       `json:"enabled"`
-	MasterServers  string     `json:"master_servers"`
-	ZoneName       string     `json:"zone_name"`
-	LastSync       *time.Time `json:"last_sync"`
-	LastSyncStatus string     `json:"last_sync_status"`
-	LastSyncError  string     `json:"last_sync_error"`
-	DomainCount    int        `json:"domain_count"`
-	FileSizeBytes  int64      `json:"file_size_bytes"`
-	SyncDurationMs int        `json:"sync_duration_ms"`
+	Enabled              bool       `json:"enabled"`
+	MasterServers        string     `json:"master_servers"`
+	ZoneName             string     `json:"zone_name"`
+	LastSync             *time.Time `json:"last_sync"`
+	LastSyncStatus       string     `json:"last_sync_status"`
+	LastSyncError        string     `json:"last_sync_error"`
+	DomainCount          int        `json:"domain_count"`
+	FileSizeBytes        int64      `json:"file_size_bytes"`
+	SyncDurationMs       int        `json:"sync_duration_ms"`
+	AutoSyncEnabled      bool       `json:"auto_sync_enabled"`
+	AutoSyncIntervalHrs  int        `json:"auto_sync_interval_hours"`
+	AutoSyncHour         int        `json:"auto_sync_hour"`
 }
 
 func (s *Server) getRPZConfig() RPZConfig {
 	cfg := RPZConfig{
-		MasterServers: "139.255.196.202,182.23.79.202,103.154.123.130",
-		ZoneName:      "trustpositifkominfo",
+		MasterServers:       "139.255.196.202,182.23.79.202,103.154.123.130",
+		ZoneName:            "trustpositifkominfo",
+		AutoSyncIntervalHrs: 24,
+		AutoSyncHour:        2,
 	}
 	ctx := context.Background()
 	s.pg.QueryRow(ctx,
 		`SELECT enabled, master_servers, zone_name, last_sync, last_sync_status, last_sync_error,
-		        domain_count, file_size_bytes, sync_duration_ms
+		        domain_count, file_size_bytes, sync_duration_ms, auto_sync_enabled, auto_sync_interval_hours,
+		        auto_sync_hour
 		 FROM rpz_config WHERE id = 1`,
 	).Scan(&cfg.Enabled, &cfg.MasterServers, &cfg.ZoneName, &cfg.LastSync, &cfg.LastSyncStatus,
-		&cfg.LastSyncError, &cfg.DomainCount, &cfg.FileSizeBytes, &cfg.SyncDurationMs)
+		&cfg.LastSyncError, &cfg.DomainCount, &cfg.FileSizeBytes, &cfg.SyncDurationMs,
+		&cfg.AutoSyncEnabled, &cfg.AutoSyncIntervalHrs, &cfg.AutoSyncHour)
 	return cfg
 }
 
@@ -74,9 +81,12 @@ func (s *Server) handleGetRPZConfig(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleUpdateRPZConfig(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Enabled       *bool   `json:"enabled"`
-		MasterServers *string `json:"master_servers"`
-		ZoneName      *string `json:"zone_name"`
+		Enabled              *bool   `json:"enabled"`
+		MasterServers        *string `json:"master_servers"`
+		ZoneName             *string `json:"zone_name"`
+		AutoSyncEnabled      *bool   `json:"auto_sync_enabled"`
+		AutoSyncIntervalHrs  *int    `json:"auto_sync_interval_hours"`
+		AutoSyncHour         *int    `json:"auto_sync_hour"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
@@ -95,12 +105,37 @@ func (s *Server) handleUpdateRPZConfig(w http.ResponseWriter, r *http.Request) {
 	if req.ZoneName != nil {
 		s.pg.Exec(ctx, "UPDATE rpz_config SET zone_name = $1, updated_at = NOW() WHERE id = 1", *req.ZoneName)
 	}
+	if req.AutoSyncEnabled != nil {
+		s.pg.Exec(ctx, "UPDATE rpz_config SET auto_sync_enabled = $1, updated_at = NOW() WHERE id = 1", *req.AutoSyncEnabled)
+	}
+	if req.AutoSyncIntervalHrs != nil {
+		hours := *req.AutoSyncIntervalHrs
+		if hours < 1 {
+			hours = 1
+		}
+		if hours > 168 {
+			hours = 168
+		}
+		s.pg.Exec(ctx, "UPDATE rpz_config SET auto_sync_interval_hours = $1, updated_at = NOW() WHERE id = 1", hours)
+	}
+	if req.AutoSyncHour != nil {
+		hour := *req.AutoSyncHour
+		if hour < 0 {
+			hour = 0
+		}
+		if hour > 23 {
+			hour = 23
+		}
+		s.pg.Exec(ctx, "UPDATE rpz_config SET auto_sync_hour = $1, updated_at = NOW() WHERE id = 1", hour)
+	}
 
-	// Regenerate kresd config to reflect enable/disable change
-	rpzCfg := s.getRPZConfig()
-	s.regenerateKresdConfig(rpzCfg.Enabled)
-	if name := findContainerName("kresd"); name != "" {
-		exec.Command("docker", "restart", name).Run()
+	needRestart := req.Enabled != nil
+	if needRestart {
+		rpzCfg := s.getRPZConfig()
+		s.regenerateKresdConfig(rpzCfg.Enabled)
+		if name := findContainerName("kresd"); name != "" {
+			exec.Command("docker", "restart", name).Run()
+		}
 	}
 
 	writeJSON(w, map[string]string{"message": "RPZ config updated"})
@@ -141,9 +176,11 @@ func (s *Server) handleRPZSync(w http.ResponseWriter, r *http.Request) {
 	rpzFile := filepath.Join(rpzDir, "rpz.zone")
 	tmpFile := rpzFile + ".tmp"
 
-	// Cleanup stale temp files from previous failed syncs
+	// Cleanup stale temp files from previous failed syncs + guaranteed cleanup on exit
 	os.Remove(tmpFile)
 	os.Remove(tmpFile + ".converted")
+	defer os.Remove(tmpFile)
+	defer os.Remove(tmpFile + ".converted")
 
 	var usedMaster string
 	var axfrErr error
@@ -615,6 +652,156 @@ func countRPZDomains(path, zoneName string) int {
 	}
 
 	return count
+}
+
+// WIB timezone (UTC+7)
+var wib = time.FixedZone("WIB", 7*60*60)
+
+// runRPZAutoSync is a background goroutine that periodically syncs RPZ if auto-sync is enabled.
+// Checks every minute. Sync triggers when:
+// 1. auto_sync_enabled is true
+// 2. Current WIB hour matches auto_sync_hour
+// 3. Enough time has passed since last sync (interval_hours)
+func (s *Server) runRPZAutoSync(ctx context.Context) {
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+
+	log.Println("RPZ auto-sync scheduler started")
+	for {
+		select {
+		case <-ctx.Done():
+			log.Println("RPZ auto-sync scheduler stopped")
+			return
+		case <-ticker.C:
+			cfg := s.getRPZConfig()
+			if !cfg.AutoSyncEnabled {
+				continue
+			}
+
+			// Check if interval has elapsed since last sync
+			interval := time.Duration(cfg.AutoSyncIntervalHrs) * time.Hour
+			if cfg.LastSync != nil && time.Since(*cfg.LastSync) < interval {
+				continue
+			}
+
+			// Check if current WIB hour matches preferred hour
+			nowWIB := time.Now().In(wib)
+			if nowWIB.Hour() != cfg.AutoSyncHour {
+				continue
+			}
+
+			log.Printf("RPZ auto-sync triggered (jam %02d:00 WIB, interval: %dh)", cfg.AutoSyncHour, cfg.AutoSyncIntervalHrs)
+			s.doRPZSyncBackground()
+		}
+	}
+}
+
+// doRPZSyncBackground performs an RPZ sync without SSE streaming (for auto-sync).
+func (s *Server) doRPZSyncBackground() {
+	cfg := s.getRPZConfig()
+	masters := strings.Split(cfg.MasterServers, ",")
+	if len(masters) == 0 {
+		log.Println("RPZ auto-sync: no master servers configured")
+		return
+	}
+
+	startTime := time.Now()
+	rpzDir := filepath.Join(s.cfg.ProjectDir, "config", "kresd")
+	rpzFile := filepath.Join(rpzDir, "rpz.zone")
+	tmpFile := rpzFile + ".tmp"
+
+	// Cleanup temp files on start and guaranteed cleanup on exit
+	os.Remove(tmpFile)
+	os.Remove(tmpFile + ".converted")
+	defer os.Remove(tmpFile)
+	defer os.Remove(tmpFile + ".converted")
+
+	var usedMaster string
+	var axfrErr error
+
+	for _, master := range masters {
+		master = strings.TrimSpace(master)
+		if master == "" {
+			continue
+		}
+		log.Printf("RPZ auto-sync: trying AXFR from %s...", master)
+
+		axfrCtx, axfrCancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		cmd := exec.CommandContext(axfrCtx,
+			"sh", "-c", fmt.Sprintf(
+				"dig AXFR @%s %s +noidnout +tcp +time=300 +tries=2 +nocomments +nostats +nocmd > %s 2>/dev/null",
+				master, cfg.ZoneName, tmpFile))
+		axfrErr = cmd.Run()
+		axfrCancel()
+
+		if info, err := os.Stat(tmpFile); err == nil && axfrErr == nil {
+			if head, herr := readFileHead(tmpFile, 1024); herr == nil && strings.Contains(head, cfg.ZoneName) {
+				if info.Size() > 10*1024 {
+					usedMaster = master
+					log.Printf("RPZ auto-sync: got %.1f MB from %s", float64(info.Size())/1024/1024, master)
+					break
+				}
+			}
+		}
+	}
+
+	if usedMaster == "" {
+		errMsg := "auto-sync: semua master server gagal"
+		if axfrErr != nil {
+			errMsg = fmt.Sprintf("auto-sync: %v", axfrErr)
+		}
+		log.Printf("RPZ %s", errMsg)
+		os.Remove(tmpFile)
+		s.updateRPZSyncStatus("error", errMsg, 0, 0, int(time.Since(startTime).Milliseconds()))
+		return
+	}
+
+	convertedFile := tmpFile + ".converted"
+	result, convertErr := convertRPZForKresd(tmpFile, convertedFile)
+	if convertErr != nil {
+		log.Printf("RPZ auto-sync: conversion warning: %v", convertErr)
+		convertedFile = tmpFile
+	} else {
+		log.Printf("RPZ auto-sync: converted %d CNAME records", result.converted)
+		os.Remove(tmpFile)
+		tmpFile = convertedFile
+	}
+
+	domainCount := countRPZDomains(tmpFile, cfg.ZoneName)
+
+	tmpInfo, err := os.Stat(tmpFile)
+	if err != nil || tmpInfo.Size() < 1024 {
+		log.Printf("RPZ auto-sync: converted file too small, aborting")
+		os.Remove(tmpFile)
+		s.updateRPZSyncStatus("error", "auto-sync: zone file too small", 0, 0, int(time.Since(startTime).Milliseconds()))
+		return
+	}
+
+	if err := os.Rename(tmpFile, rpzFile); err != nil {
+		data, _ := os.ReadFile(tmpFile)
+		if len(data) > 1024 {
+			os.WriteFile(rpzFile, data, 0644)
+		}
+		os.Remove(tmpFile)
+	}
+
+	duration := time.Since(startTime)
+	fileInfo, _ := os.Stat(rpzFile)
+	fileSize := int64(0)
+	if fileInfo != nil {
+		fileSize = fileInfo.Size()
+	}
+
+	s.updateRPZSyncStatus("success", "", domainCount, fileSize, int(duration.Milliseconds()))
+	log.Printf("RPZ auto-sync complete: %d domains, %.1f MB, %v", domainCount, float64(fileSize)/1024/1024, duration.Round(time.Second))
+
+	if cfg.Enabled {
+		s.regenerateKresdConfig(true)
+		if name := findContainerName("kresd"); name != "" {
+			exec.Command("docker", "restart", name).Run()
+		}
+		log.Println("RPZ auto-sync: kresd restarted with updated zone")
+	}
 }
 
 // readFileHead reads first n bytes of a file

@@ -130,7 +130,7 @@ export interface FilterRule {
 // RPZ Komdigi API
 export const rpzAPI = {
   getConfig: () => fetchAPI<RPZConfig>("/api/admin/rpz/config"),
-  updateConfig: (data: Partial<{ enabled: boolean; master_servers: string; zone_name: string }>) =>
+  updateConfig: (data: Partial<{ enabled: boolean; master_servers: string; zone_name: string; auto_sync_enabled: boolean; auto_sync_interval_hours: number; auto_sync_hour: number }>) =>
     fetch("/api/admin/rpz/config", {
       method: "PUT",
       headers: { "Content-Type": "application/json", ...authHeaders() },
@@ -155,6 +155,9 @@ export interface RPZConfig {
   domain_count: number;
   file_size_bytes: number;
   sync_duration_ms: number;
+  auto_sync_enabled: boolean;
+  auto_sync_interval_hours: number;
+  auto_sync_hour: number;
 }
 
 // Block Page Config API
