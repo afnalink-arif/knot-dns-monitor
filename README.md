@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.0-blue?style=flat-square" alt="Version" />
+  <img src="https://img.shields.io/badge/version-1.1.0-blue?style=flat-square" alt="Version" />
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="License" />
   <img src="https://img.shields.io/badge/knot_resolver-6.2-orange?style=flat-square" alt="Knot Resolver" />
   <img src="https://img.shields.io/badge/docker-10_services-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker" />
