@@ -29,8 +29,9 @@ type Server struct {
 	rdb            *redis.Client
 	httpClient     *http.Client
 	clusterRole    atomic.Value // stores current role string
-	pollerCancel   context.CancelFunc
-	maintenanceMu  sync.Mutex // shared lock: prevents RPZ sync and system update from running simultaneously
+	pollerCancel      context.CancelFunc
+	maintenanceMu     sync.Mutex // shared lock: prevents RPZ sync and system update from running simultaneously
+	localUpdateCache  atomic.Value // stores json.RawMessage of local update check
 }
 
 func NewRouter(cfg *config.Config) (http.Handler, func(), error) {

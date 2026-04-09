@@ -9,8 +9,8 @@ import (
 	"fmt"
 	"io"
 	"log"
-
 	"net/http"
+	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
@@ -309,6 +309,11 @@ func (s *Server) handleNodeMetrics(w http.ResponseWriter, r *http.Request) {
 // --- Cluster overview (aggregated) ---
 
 func (s *Server) handleClusterOverview(w http.ResponseWriter, r *http.Request) {
+	type UpdateInfo struct {
+		UpdateAvailable bool     `json:"update_available"`
+		CommitsBehind   int      `json:"commits_behind"`
+		CommitLog       []string `json:"commit_log,omitempty"`
+	}
 	type NodeOverview struct {
 		ID            int              `json:"id"`
 		Name          string           `json:"name"`
@@ -320,6 +325,7 @@ func (s *Server) handleClusterOverview(w http.ResponseWriter, r *http.Request) {
 		LastError     string           `json:"last_error"`
 		Metrics       *json.RawMessage `json:"metrics"`
 		SystemMetrics *json.RawMessage `json:"system_metrics"`
+		UpdateInfo    *UpdateInfo      `json:"update_info,omitempty"`
 	}
 
 	nodes := []NodeOverview{}
@@ -352,6 +358,17 @@ func (s *Server) handleClusterOverview(w http.ResponseWriter, r *http.Request) {
 	if localSystem != nil {
 		localNode.SystemMetrics = localSystem
 	}
+
+	// Local update check (from in-memory cache)
+	if cached := s.localUpdateCache.Load(); cached != nil {
+		if data, ok := cached.(json.RawMessage); ok {
+			var ui UpdateInfo
+			if json.Unmarshal(data, &ui) == nil {
+				localNode.UpdateInfo = &ui
+			}
+		}
+	}
+
 	nodes = append(nodes, localNode)
 
 	// Remote agent nodes
@@ -377,6 +394,16 @@ func (s *Server) handleClusterOverview(w http.ResponseWriter, r *http.Request) {
 			).Scan(&sysData)
 			if err == nil {
 				n.SystemMetrics = &sysData
+			}
+			var updateData json.RawMessage
+			err = s.pg.QueryRow(r.Context(),
+				"SELECT data FROM cluster_metrics_cache WHERE node_id = $1 AND metric_type = 'update_check'", n.ID,
+			).Scan(&updateData)
+			if err == nil {
+				var ui UpdateInfo
+				if json.Unmarshal(updateData, &ui) == nil {
+					n.UpdateInfo = &ui
+				}
 			}
 			nodes = append(nodes, n)
 		}
@@ -568,9 +595,12 @@ func (s *Server) runPoller(ctx context.Context) {
 	log.Println("Cluster poller started")
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
+	updateCheckTicker := time.NewTicker(5 * time.Minute)
+	defer updateCheckTicker.Stop()
 
 	// Poll immediately on start
 	s.pollAllNodes()
+	s.pollUpdateChecks()
 
 	for {
 		select {
@@ -579,8 +609,81 @@ func (s *Server) runPoller(ctx context.Context) {
 			return
 		case <-ticker.C:
 			s.pollAllNodes()
+		case <-updateCheckTicker.C:
+			s.pollUpdateChecks()
 		}
 	}
+}
+
+func (s *Server) pollUpdateChecks() {
+	// Check local node
+	s.pollLocalUpdateCheck()
+
+	// Check remote agent nodes
+	ctx := context.Background()
+	rows, err := s.pg.Query(ctx, "SELECT id, domain, api_token FROM cluster_nodes")
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	type node struct {
+		id     int
+		domain string
+		token  string
+	}
+	var nodes []node
+	for rows.Next() {
+		var n node
+		rows.Scan(&n.id, &n.domain, &n.token)
+		nodes = append(nodes, n)
+	}
+
+	for _, n := range nodes {
+		if updateData, err := s.fetchAgentEndpoint(n.domain, n.token, "/update/check"); err == nil {
+			s.pg.Exec(ctx,
+				`INSERT INTO cluster_metrics_cache (node_id, metric_type, data, fetched_at)
+				 VALUES ($1, 'update_check', $2, NOW())
+				 ON CONFLICT (node_id, metric_type) DO UPDATE SET data = $2, fetched_at = NOW()`,
+				n.id, updateData)
+		}
+	}
+}
+
+func (s *Server) pollLocalUpdateCheck() {
+	projectDir := s.cfg.ProjectDir
+
+	// git fetch origin (ignore errors for offline)
+	fetchCmd := exec.Command("git", "fetch", "origin")
+	fetchCmd.Dir = projectDir
+	fetchCmd.Run()
+
+	resp := map[string]interface{}{
+		"update_available": false,
+		"commits_behind":   0,
+		"commit_log":       []string{},
+	}
+
+	// commits behind
+	countCmd := exec.Command("git", "rev-list", "--count", "HEAD..origin/main")
+	countCmd.Dir = projectDir
+	if out, err := countCmd.Output(); err == nil {
+		var count int
+		fmt.Sscanf(strings.TrimSpace(string(out)), "%d", &count)
+		resp["commits_behind"] = count
+		resp["update_available"] = count > 0
+
+		if count > 0 {
+			logCmd := exec.Command("git", "log", "--oneline", "HEAD..origin/main")
+			logCmd.Dir = projectDir
+			if logOut, err := logCmd.Output(); err == nil && len(logOut) > 0 {
+				resp["commit_log"] = strings.Split(strings.TrimSpace(string(logOut)), "\n")
+			}
+		}
+	}
+
+	data, _ := json.Marshal(resp)
+	s.localUpdateCache.Store(json.RawMessage(data))
 }
 
 func (s *Server) pollAllNodes() {
@@ -668,6 +771,7 @@ func (s *Server) pollNode(ctx context.Context, id int, domain, token string) {
 			 ON CONFLICT (node_id, metric_type) DO UPDATE SET data = $2, fetched_at = NOW()`,
 			id, systemData)
 	}
+
 }
 
 // --- Helper: fetch from agent ---

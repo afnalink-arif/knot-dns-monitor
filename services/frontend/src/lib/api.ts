@@ -331,6 +331,12 @@ export interface ClusterOverview {
   node_count: number;
 }
 
+export interface ClusterNodeUpdateInfo {
+  update_available: boolean;
+  commits_behind: number;
+  commit_log?: string[];
+}
+
 export interface ClusterNodeOverview {
   id: number;
   name: string;
@@ -340,6 +346,7 @@ export interface ClusterNodeOverview {
   last_seen_at: string | null;
   last_error: string;
   metrics: any;
+  update_info?: ClusterNodeUpdateInfo;
 }
 
 // Auth API (public, no auth header needed)

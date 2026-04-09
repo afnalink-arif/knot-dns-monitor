@@ -9,6 +9,34 @@ export default function ClusterPage() {
   const [overview, { refetch }] = createResource(() => clusterAPI.getOverview());
   const [updatingNodes, setUpdatingNodes] = createSignal<Set<number>>(new Set());
   const [updateOutputs, setUpdateOutputs] = createSignal<Record<number, string[]>>({});
+  const [finishedNodes, setFinishedNodes] = createSignal<Set<number>>(new Set());
+  const [failedNodes, setFailedNodes] = createSignal<Set<number>>(new Set());
+  const [updateProgress, setUpdateProgress] = createSignal<Record<number, { step: string; pct: number }>>({});
+  const [showErrorLog, setShowErrorLog] = createSignal<Set<number>>(new Set());
+
+  // Map update.sh output lines to progress steps
+  const progressSteps: [RegExp, string, number][] = [
+    [/Pulling latest code/,              "Pulling latest code...",         10],
+    [/Regenerating configs/,             "Regenerating configs...",        20],
+    [/Rebuilding custom images/,         "Building images...",            30],
+    [/Cleaning up old images/,           "Cleaning up...",                45],
+    [/Restarting infrastructure/,        "Restarting infrastructure...",  50],
+    [/Restarting dnstap/,                "Restarting dnstap-ingester...", 58],
+    [/Restarting kresd/,                 "Restarting kresd...",           65],
+    [/Restarting monitoring/,            "Restarting monitoring...",      72],
+    [/Restarting frontend/,              "Restarting frontend...",        78],
+    [/Restarting caddy/,                 "Restarting caddy...",           82],
+    [/Running health checks/,            "Running health checks...",      88],
+    [/Restarting backend/,               "Restarting backend...",         95],
+    [/Update complete/,                  "Update complete",              100],
+  ];
+
+  const matchProgress = (line: string): { step: string; pct: number } | null => {
+    for (const [regex, step, pct] of progressSteps) {
+      if (regex.test(line)) return { step, pct };
+    }
+    return null;
+  };
   const [cleaningNodes, setCleaningNodes] = createSignal<Set<number>>(new Set());
   const [cleanResults, setCleanResults] = createSignal<Record<number, string[]>>({});
 
@@ -70,9 +98,13 @@ export default function ClusterPage() {
   };
 
   const handleNodeUpdate = async (nodeId: number, isLocal: boolean) => {
-    // Mark node as updating
+    // Reset state
     setUpdatingNodes((prev) => new Set([...prev, nodeId]));
+    setFinishedNodes((prev) => { const s = new Set(prev); s.delete(nodeId); return s; });
+    setFailedNodes((prev) => { const s = new Set(prev); s.delete(nodeId); return s; });
+    setShowErrorLog((prev) => { const s = new Set(prev); s.delete(nodeId); return s; });
     setUpdateOutputs((prev) => ({ ...prev, [nodeId]: [] }));
+    setUpdateProgress((prev) => ({ ...prev, [nodeId]: { step: "Starting update...", pct: 2 } }));
 
     const url = isLocal
       ? "/api/admin/update/execute"
@@ -82,11 +114,16 @@ export default function ClusterPage() {
       setUpdateOutputs((prev) => ({ ...prev, [nodeId]: [...(prev[nodeId] || []), line] }));
     };
 
+    let hasError = false;
+
     try {
       const res = await fetch(url, { method: "POST", headers: authHeaders() });
       if (!res.ok) {
         appendOutput(nodeId, "[ERROR] Failed to start update");
+        hasError = true;
         setUpdatingNodes((prev) => { const s = new Set(prev); s.delete(nodeId); return s; });
+        setFailedNodes((prev) => new Set([...prev, nodeId]));
+        setUpdateProgress((prev) => ({ ...prev, [nodeId]: { step: "Failed to start update", pct: 0 } }));
         return;
       }
       const reader = res.body!.getReader();
@@ -99,16 +136,36 @@ export default function ClusterPage() {
         const lines = buffer.split("\n");
         buffer = lines.pop() || "";
         for (const line of lines) {
-          if (line.startsWith("data: ")) appendOutput(nodeId, line.slice(6));
-          else if (line.startsWith("event: done")) {
+          if (line.startsWith("data: ")) {
+            const text = line.slice(6);
+            appendOutput(nodeId, text);
+            if (text.includes("[ERROR]")) hasError = true;
+            const prog = matchProgress(text);
+            if (prog) setUpdateProgress((prev) => ({ ...prev, [nodeId]: prog }));
+          } else if (line.startsWith("event: error")) {
+            hasError = true;
+          } else if (line.startsWith("event: done")) {
             setUpdatingNodes((prev) => { const s = new Set(prev); s.delete(nodeId); return s; });
+            if (!hasError) {
+              setFinishedNodes((prev) => new Set([...prev, nodeId]));
+              setUpdateProgress((prev) => ({ ...prev, [nodeId]: { step: "Update complete", pct: 100 } }));
+            } else {
+              setFailedNodes((prev) => new Set([...prev, nodeId]));
+            }
           }
         }
       }
     } catch {
       appendOutput(nodeId, "[ERROR] Connection failed");
+      hasError = true;
     }
     setUpdatingNodes((prev) => { const s = new Set(prev); s.delete(nodeId); return s; });
+    if (hasError) {
+      setFailedNodes((prev) => new Set([...prev, nodeId]));
+    } else {
+      setFinishedNodes((prev) => new Set([...prev, nodeId]));
+      setUpdateProgress((prev) => ({ ...prev, [nodeId]: { step: "Update complete", pct: 100 } }));
+    }
     refetch();
   };
 
@@ -196,8 +253,12 @@ export default function ClusterPage() {
                 const nodeCacheHit = () => node.metrics ? extractValue(node.metrics.cache_hit_ratio) : null;
                 const nodeLatency = () => node.metrics ? extractValue(node.metrics.avg_latency_ms) : null;
                 const isUpdating = () => updatingNodes().has(node.id);
+                const isFinished = () => finishedNodes().has(node.id);
+                const isFailed = () => failedNodes().has(node.id);
                 const isCleaning = () => cleaningNodes().has(node.id);
                 const nodeOutput = () => updateOutputs()[node.id] || [];
+                const nodeProgress = () => updateProgress()[node.id];
+                const isErrorLogOpen = () => showErrorLog().has(node.id);
                 const nodeCleanResult = () => cleanResults()[node.id] || [];
 
                 // System metrics
@@ -228,8 +289,8 @@ export default function ClusterPage() {
                       </div>
                     </div>
 
-                    {/* Version badge */}
-                    <div class="mb-4">
+                    {/* Version badge + update available */}
+                    <div class="mb-4 flex items-center gap-2 flex-wrap">
                       <Show when={node.version} fallback={
                         <span class="text-[10px] text-slate-600">Version unknown</span>
                       }>
@@ -238,6 +299,17 @@ export default function ClusterPage() {
                             <path stroke-linecap="round" stroke-linejoin="round" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z" />
                           </svg>
                           v{node.version}
+                        </span>
+                      </Show>
+                      <Show when={node.update_info?.update_available}>
+                        <span
+                          class="inline-flex items-center gap-1 px-2 py-1 bg-amber-500/15 rounded text-[10px] font-medium text-amber-400 cursor-default"
+                          title={node.update_info?.commit_log?.join("\n") || ""}
+                        >
+                          <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                          </svg>
+                          {node.update_info!.commits_behind} update{node.update_info!.commits_behind > 1 ? "s" : ""} available
                         </span>
                       </Show>
                     </div>
@@ -345,26 +417,67 @@ export default function ClusterPage() {
                       </div>
                     </Show>
 
-                    {/* Per-node update output */}
-                    <Show when={nodeOutput().length > 0}>
-                      <div class="mt-2 bg-slate-950 rounded-lg p-2.5 font-mono text-[10px] leading-4 max-h-40 overflow-y-auto border border-slate-700/50"
-                        ref={(el) => {
-                          const observer = new MutationObserver(() => { el.scrollTop = el.scrollHeight; });
-                          observer.observe(el, { childList: true, subtree: true });
-                        }}>
-                        <For each={nodeOutput()}>
-                          {(line) => (
-                            <div class={
-                              line.includes("[OK]") ? "text-emerald-400" :
-                              line.includes("[WARN]") ? "text-amber-400" :
-                              line.includes("[ERROR]") ? "text-red-400" :
-                              line.includes("[INFO]") ? "text-blue-400" :
-                              "text-slate-500"
-                            }>{line}</div>
-                          )}
-                        </For>
-                        <Show when={isUpdating()}>
-                          <div class="text-amber-400 animate-pulse mt-1">Updating...</div>
+                    {/* Update progress */}
+                    <Show when={isUpdating() && nodeProgress()}>
+                      <div class="mt-2 p-2.5 bg-slate-900 rounded-lg border border-slate-700/50 space-y-2">
+                        <div class="flex items-center justify-between">
+                          <span class="text-[10px] text-blue-400 font-medium">{nodeProgress()!.step}</span>
+                          <span class="text-[10px] text-slate-500">{nodeProgress()!.pct}%</span>
+                        </div>
+                        <div class="h-1.5 rounded-full bg-slate-700 overflow-hidden">
+                          <div
+                            class="h-full rounded-full bg-blue-500 transition-all duration-500 ease-out"
+                            style={{ width: `${nodeProgress()!.pct}%` }}
+                          />
+                        </div>
+                      </div>
+                    </Show>
+
+                    {/* Update success */}
+                    <Show when={!isUpdating() && isFinished()}>
+                      <div class="mt-2 p-2 bg-emerald-500/10 rounded-lg border border-emerald-500/20 flex items-center gap-2">
+                        <svg class="w-3.5 h-3.5 text-emerald-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+                          <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
+                        </svg>
+                        <span class="text-[11px] text-emerald-400 font-medium">Update complete</span>
+                      </div>
+                    </Show>
+
+                    {/* Update failed */}
+                    <Show when={!isUpdating() && isFailed()}>
+                      <div class="mt-2 space-y-1.5">
+                        <button
+                          class="w-full p-2 bg-red-500/10 rounded-lg border border-red-500/20 flex items-center justify-between cursor-pointer hover:bg-red-500/15 transition-colors"
+                          onClick={() => setShowErrorLog((prev) => {
+                            const s = new Set(prev);
+                            s.has(node.id) ? s.delete(node.id) : s.add(node.id);
+                            return s;
+                          })}
+                        >
+                          <div class="flex items-center gap-2">
+                            <svg class="w-3.5 h-3.5 text-red-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+                              <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                            <span class="text-[11px] text-red-400 font-medium">Update failed</span>
+                          </div>
+                          <svg class={`w-3 h-3 text-red-400/60 transition-transform ${isErrorLogOpen() ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
+                          </svg>
+                        </button>
+                        <Show when={isErrorLogOpen()}>
+                          <div class="bg-slate-950 rounded-lg p-2.5 font-mono text-[10px] leading-4 max-h-40 overflow-y-auto border border-slate-700/50">
+                            <For each={nodeOutput()}>
+                              {(line) => (
+                                <div class={
+                                  line.includes("[OK]") ? "text-emerald-400" :
+                                  line.includes("[WARN]") ? "text-amber-400" :
+                                  line.includes("[ERROR]") ? "text-red-400" :
+                                  line.includes("[INFO]") ? "text-blue-400" :
+                                  "text-slate-500"
+                                }>{line}</div>
+                              )}
+                            </For>
+                          </div>
                         </Show>
                       </div>
                     </Show>
