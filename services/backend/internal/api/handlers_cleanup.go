@@ -53,8 +53,8 @@ func (s *Server) handleRunCleanup(w http.ResponseWriter, r *http.Request) {
 
 	results := []string{}
 
-	// Prune dangling images
-	out, err := exec.CommandContext(r.Context(), "docker", "image", "prune", "-f").CombinedOutput()
+	// Prune all unused images (not just dangling)
+	out, err := exec.CommandContext(r.Context(), "docker", "image", "prune", "-af").CombinedOutput()
 	if err == nil {
 		for _, line := range strings.Split(string(out), "\n") {
 			if strings.HasPrefix(line, "Total reclaimed space:") {
@@ -63,8 +63,8 @@ func (s *Server) handleRunCleanup(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Prune build cache
-	out, err = exec.CommandContext(r.Context(), "docker", "builder", "prune", "-f").CombinedOutput()
+	// Prune all build cache
+	out, err = exec.CommandContext(r.Context(), "docker", "builder", "prune", "-af").CombinedOutput()
 	if err == nil {
 		for _, line := range strings.Split(string(out), "\n") {
 			if strings.HasPrefix(line, "Total:") {
