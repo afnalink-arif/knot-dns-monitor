@@ -123,9 +123,9 @@ const Layout: Component<LayoutProps> = (props) => {
         {/* Brand header */}
         <div class="px-4 py-4">
           <div class="flex items-center gap-3">
-            <img src="/logo-kdm.png" alt="Knot DNS Manager" class="h-9 object-contain flex-shrink-0" />
+            <img src="/logo-kdm.png" alt="KResD Manager" class="h-9 object-contain flex-shrink-0" />
             <div>
-              <h1 class="text-[14px] font-bold text-white tracking-tight leading-tight">Knot DNS</h1>
+              <h1 class="text-[14px] font-bold text-white tracking-tight leading-tight">KResD</h1>
               <p class="text-[10px] text-[var(--color-text-faint)] font-medium tracking-wider uppercase">Manager</p>
             </div>
           </div>

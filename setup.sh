@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-echo "=== Knot DNS Manager - Setup ==="
+echo "=== KResD Manager - Setup ==="
 
 # Generate secrets
 echo "Generating secrets..."

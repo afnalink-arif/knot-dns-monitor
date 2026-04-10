@@ -43,7 +43,7 @@ const translations: Record<string, Record<Lang, string>> = {
   "nav.settings.update": { en: "Update & Services", id: "Update & Layanan" },
   "nav.settings.cluster": { en: "Cluster", id: "Kluster" },
   "footer.resolver_active": { en: "Resolver Active", id: "Resolver Aktif" },
-  "footer.copyright": { en: "Knot DNS Manager v1.1 \u00a9 2026 Afnalink", id: "Knot DNS Manager v1.1 \u00a9 2026 Afnalink" },
+  "footer.copyright": { en: "KResD Manager \u00a9 2026 Afnalink", id: "KResD Manager \u00a9 2026 Afnalink" },
 
   // === Login ===
   "login.sign_in": { en: "Sign In", id: "Masuk" },

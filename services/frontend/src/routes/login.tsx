@@ -77,7 +77,7 @@ export default function LoginPage() {
 
         <div class="relative z-10 px-16 max-w-lg">
           <div class="mb-8">
-            <img src="/logo-kdm.png" alt="Knot DNS Manager" class="h-16 object-contain" />
+            <img src="/logo-kdm.png" alt="KResD Manager" class="h-16 object-contain" />
           </div>
           <p class="text-lg text-slate-400 leading-relaxed mb-8">
             {t("login.tagline")}
@@ -103,7 +103,7 @@ export default function LoginPage() {
         <div class="w-full max-w-sm">
           {/* Mobile logo */}
           <div class="lg:hidden text-center mb-8">
-            <img src="/logo-kdm.png" alt="Knot DNS Manager" class="h-12 object-contain mx-auto" />
+            <img src="/logo-kdm.png" alt="KResD Manager" class="h-12 object-contain mx-auto" />
           </div>
 
           <div class="mb-6">
@@ -172,7 +172,7 @@ export default function LoginPage() {
           </form>
 
           <p class="text-center text-[10px] text-slate-600 mt-8 select-none">
-            Knot DNS Manager v1.0 &copy; 2026 Afnalink. Licensed under MIT.
+            KResD Manager &copy; 2026 Afnalink. Licensed under MIT.
           </p>
         </div>
       </div>

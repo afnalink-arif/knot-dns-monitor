@@ -1,11 +1,11 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/afnalink-arif/knot-dns-manager/main/.github/logo-kdm.png" width="200" alt="Knot DNS Manager" />
+  <img src="https://raw.githubusercontent.com/afnalink-arif/knot-dns-manager/main/.github/logo-kdm.png" width="200" alt="KResD Manager" />
 </p>
 
-<h1 align="center">Knot DNS Manager</h1>
+<h1 align="center">KResD Manager</h1>
 
 <p align="center">
-  <strong>DNS resolver management with real-time monitoring, filtering & analytics.</strong>
+  <strong>Knot Resolver management with real-time monitoring, filtering & analytics.</strong>
 </p>
 
 <p align="center">
