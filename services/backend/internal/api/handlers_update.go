@@ -119,6 +119,8 @@ func (s *Server) handleUpdateExecute(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "event: error\ndata: update failed: %s\n\n", err)
 	} else {
 		fmt.Fprintf(w, "event: done\ndata: Update complete\n\n")
+		// Clear cached update check so overview reflects up-to-date state
+		s.localUpdateCache.Store(json.RawMessage(`{"update_available":false,"commits_behind":0,"commit_log":[]}`))
 	}
 	flusher.Flush()
 }

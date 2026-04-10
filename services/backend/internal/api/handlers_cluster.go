@@ -457,6 +457,10 @@ func (s *Server) handlePushNodeUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.proxyAgentSSE(w, domain, token, "/update/execute")
+
+	// Clear cached update check so overview reflects up-to-date state
+	s.pg.Exec(context.Background(),
+		"DELETE FROM cluster_metrics_cache WHERE node_id = $1 AND metric_type = 'update_check'", id)
 }
 
 func (s *Server) handlePushUpdateAll(w http.ResponseWriter, r *http.Request) {
