@@ -10,8 +10,10 @@
 #   ./calculate-cache-size.sh          # prints e.g. "2G"
 
 calculate_cache_size() {
-    # 1. Available disk space (for the root partition or PROJECT_DIR)
-    local target_dir="${PROJECT_DIR:-/root/knot-dns-monitor}"
+    # 1. Available disk space (for the root partition or PROJECT_DIR).
+    # Default to this script's own directory so it works regardless of where
+    # the project is cloned (and when invoked standalone, not via update.sh).
+    local target_dir="${PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
     local disk_avail_mb
     disk_avail_mb=$(df -BM --output=avail "$target_dir" 2>/dev/null | tail -1 | tr -d ' M')
 

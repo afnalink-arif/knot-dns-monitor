@@ -136,10 +136,16 @@ if [[ -f config/kresd/config.yaml.template ]]; then
 "
     done
 
-    # Preserve existing local-data (filter blocklist) from current config
+    # Preserve existing local-data (filter blocklist) from current config.
+    # awk captures `local-data:` and every following indented line until the
+    # next top-level key or EOF — handles the block being last in the file.
     LOCAL_DATA=""
     if [[ -f config/kresd/config.yaml ]]; then
-        LOCAL_DATA=$(sed -n '/^local-data:/,/^[^ ]/p' config/kresd/config.yaml | head -n -1)
+        LOCAL_DATA=$(awk '
+            /^local-data:/ { capture=1; print; next }
+            capture && /^[^ ]/ { capture=0 }
+            capture { print }
+        ' config/kresd/config.yaml)
     fi
 
     TEMP_CONFIG=$(mktemp)
