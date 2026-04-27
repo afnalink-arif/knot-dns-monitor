@@ -170,16 +170,9 @@ ok "Subnets: ${SUBNETS}"
 if [[ -n "$ARG_CACHE" ]]; then
     CACHE_SIZE="$ARG_CACHE"
 else
-    # Auto-detect: use ~70% of available RAM, capped at 8G
-    TOTAL_MEM_MB=$(free -m 2>/dev/null | awk '/^Mem:/{print $2}' || echo "8192")
-    AUTO_CACHE_MB=$((TOTAL_MEM_MB * 70 / 100))
-    if [[ $AUTO_CACHE_MB -gt 8192 ]]; then
-        AUTO_CACHE="8G"
-    elif [[ $AUTO_CACHE_MB -gt 1024 ]]; then
-        AUTO_CACHE="$((AUTO_CACHE_MB / 1024))G"
-    else
-        AUTO_CACHE="${AUTO_CACHE_MB}M"
-    fi
+    # Auto-detect: based on min(available disk, RAM), see calculate-cache-size.sh
+    source "$(dirname "$0")/calculate-cache-size.sh"
+    AUTO_CACHE=$(calculate_cache_size)
     read -rp "  DNS cache size [${AUTO_CACHE}]: " CACHE_SIZE
     CACHE_SIZE="${CACHE_SIZE:-$AUTO_CACHE}"
 fi

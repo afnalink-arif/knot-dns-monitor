@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS dnsmonitor.dns_queries (
 ) ENGINE = MergeTree()
 PARTITION BY toDate(timestamp)
 ORDER BY (timestamp, qname)
-TTL toDate(timestamp) + INTERVAL 30 DAY
+TTL toDate(timestamp) + INTERVAL 14 DAY
 SETTINGS index_granularity = 8192;
 
 -- Materialized view: per-minute aggregation for fast dashboard queries

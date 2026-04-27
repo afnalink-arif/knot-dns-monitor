@@ -1,7 +1,14 @@
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   dnstap-ingester:
     build: ./services/dnstap-ingester
     restart: unless-stopped
+    logging: *default-logging
     volumes:
       - dnstap-sock:/var/run/dnstap
     environment:
@@ -17,6 +24,7 @@ services:
   kresd:
     image: cznic/knot-resolver:latest
     restart: unless-stopped
+    logging: *default-logging
     ports:
       - "53:53/udp"
       - "53:53/tcp"
@@ -26,6 +34,8 @@ services:
       - ./config/kresd/config.yaml:/etc/knot-resolver/config.yaml:ro
       - ./config/kresd/tls:/etc/knot-resolver/tls:ro
       - ./config/kresd/rpz.zone:/etc/knot-resolver/rpz.zone:ro
+      - ./config/kresd/policy-loader.lua.j2:/usr/lib/python3/dist-packages/knot_resolver/datamodel/templates/policy-loader.lua.j2:ro
+      - ./config/kresd/kresd.lua.j2:/usr/lib/python3/dist-packages/knot_resolver/datamodel/templates/kresd.lua.j2:ro
       - kresd-cache:/var/cache/knot-resolver
       - dnstap-sock:/var/run/dnstap
     depends_on:
@@ -34,6 +44,7 @@ services:
   prometheus:
     image: prom/prometheus:v2.55.0
     restart: unless-stopped
+    logging: *default-logging
     ports:
       - "127.0.0.1:9090:9090"
     volumes:
@@ -63,6 +74,7 @@ services:
   clickhouse:
     image: clickhouse/clickhouse-server:24.12
     restart: unless-stopped
+    logging: *default-logging
     ports:
       - "127.0.0.1:8123:8123"
       - "127.0.0.1:9000:9000"
@@ -118,6 +130,7 @@ services:
       args:
         APP_VERSION: "${APP_VERSION:-dev}"
     restart: unless-stopped
+    logging: *default-logging
     ports:
       - "127.0.0.1:8080:8080"
     volumes:
@@ -150,6 +163,7 @@ services:
   frontend:
     build: ./services/frontend
     restart: unless-stopped
+    logging: *default-logging
     ports:
       - "127.0.0.1:3000:3000"
     depends_on:
@@ -158,6 +172,7 @@ services:
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
+    logging: *default-logging
     ports:
       - "0.0.0.0:80:80"
       - "0.0.0.0:443:443"

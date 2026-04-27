@@ -117,6 +117,16 @@ if [[ -f config/Caddyfile.template ]]; then
 fi
 
 if [[ -f config/kresd/config.yaml.template ]]; then
+    # Recalculate cache size dynamically based on current disk/RAM
+    # Always recalculate unless CACHE_SIZE is explicitly set to a fixed value
+    if [[ -z "$CACHE_SIZE" || "$CACHE_SIZE" == "auto" ]] && [[ -f "$(dirname "$0")/calculate-cache-size.sh" ]]; then
+        source "$(dirname "$0")/calculate-cache-size.sh"
+        CACHE_SIZE=$(calculate_cache_size)
+        ok "Dynamic cache size: ${CACHE_SIZE}"
+    else
+        ok "Fixed cache size: ${CACHE_SIZE}"
+    fi
+
     SUBNET_VIEWS=""
     IFS=',' read -ra SUBNET_ARRAY <<< "$ALLOWED_SUBNETS"
     for subnet in "${SUBNET_ARRAY[@]}"; do
