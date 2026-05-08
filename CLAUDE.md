@@ -30,7 +30,7 @@ Client → dnsdist (:53, packet cache) → kresd (:5353 internal, DoT:853, DoH:4
 | Server | IP | Domain | Role |
 |--------|----|--------|------|
 | VM 216 | 103.186.204.216 | 216.afna.link | MASTER (code origin, push to git) |
-| VM 212 | 103.186.204.212 | _TODO_ | REPLICA (git pull + update.sh) |
+| VM 212 | 103.186.204.212 | 212.afna.link | REPLICA (git pull + update.sh) |
 
 Other replicas pull from git and run `./update.sh`.
 

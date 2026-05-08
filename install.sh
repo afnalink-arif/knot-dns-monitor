@@ -167,12 +167,13 @@ fi
 ok "Subnets: ${SUBNETS}"
 
 # Cache size
-if [[ -n "$ARG_CACHE" ]]; then
+source "$(dirname "$0")/calculate-cache-size.sh"
+AUTO_CACHE=$(calculate_cache_size)
+if [[ -n "$ARG_CACHE" && "$ARG_CACHE" != "auto" ]]; then
     CACHE_SIZE="$ARG_CACHE"
+elif [[ -n "$ARG_CACHE" && "$ARG_CACHE" == "auto" ]]; then
+    CACHE_SIZE="$AUTO_CACHE"
 else
-    # Auto-detect: based on min(available disk, RAM), see calculate-cache-size.sh
-    source "$(dirname "$0")/calculate-cache-size.sh"
-    AUTO_CACHE=$(calculate_cache_size)
     read -rp "  DNS cache size [${AUTO_CACHE}]: " CACHE_SIZE
     CACHE_SIZE="${CACHE_SIZE:-$AUTO_CACHE}"
 fi
