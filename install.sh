@@ -380,6 +380,68 @@ else
     warn "dig not installed, skipping DNS verification. Install: apt install dnsutils"
 fi
 
+# ---- Setup Firewall ----
+echo ""
+info "Setting up firewall rules..."
+
+setup_firewall() {
+    local iptables_ok=0
+
+    if ! command -v iptables &>/dev/null; then
+        warn "iptables not found, installing..."
+        apt-get install -y iptables >/dev/null 2>&1 || return 1
+    fi
+
+    iptables -L DOCKER-USER -n >/dev/null 2>&1 || return 1
+
+    iptables -F DOCKER-USER 2>/dev/null || true
+
+    iptables -A DOCKER-USER -s 172.16.0.0/12 -j RETURN
+    iptables -A DOCKER-USER -s 127.0.0.0/8 -j RETURN
+
+    IFS=',' read -ra SUBNET_ARRAY <<< "$SUBNETS"
+    for subnet in "${SUBNET_ARRAY[@]}"; do
+        subnet=$(echo "$subnet" | xargs)
+        iptables -A DOCKER-USER -s "${subnet}" -p udp --dport 53 -j ACCEPT
+        iptables -A DOCKER-USER -s "${subnet}" -p tcp --dport 53 -j ACCEPT
+        iptables -A DOCKER-USER -s "${subnet}" -p tcp --dport 853 -j ACCEPT
+    done
+
+    iptables -A DOCKER-USER -p udp --dport 53 -j DROP
+    iptables -A DOCKER-USER -p tcp --dport 53 -j DROP
+    iptables -A DOCKER-USER -p tcp --dport 853 -j DROP
+
+    iptables_ok=1
+
+    if [[ "$iptables_ok" == "1" ]]; then
+        ok "Firewall rules applied (DOCKER-USER chain)"
+
+        if ! dpkg -s iptables-persistent &>/dev/null; then
+            DEBIAN_FRONTEND=noninteractive apt-get install -y iptables-persistent >/dev/null 2>&1 || true
+        fi
+        mkdir -p /etc/iptables
+        iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+        ok "Firewall rules persisted to /etc/iptables/rules.v4"
+    fi
+}
+
+if setup_firewall; then
+    :
+else
+    warn "Could not setup firewall automatically."
+    warn "Manual setup: see Section 10 in documentation (dns.md)"
+fi
+
+# ---- Setup Cron (disk reclaim) ----
+if command -v crontab &>/dev/null; then
+    CRON_ENTRY="0 3 * * * ${PROJECT_DIR}/disk-reclaim.sh >> /var/log/disk-reclaim.log 2>&1"
+    (crontab -l 2>/dev/null | grep -v disk-reclaim; echo "$CRON_ENTRY") | crontab -
+    ok "Disk reclaim cron installed (daily at 03:00)"
+else
+    warn "cron not installed. Install: apt install cron"
+    warn "Then run: echo '0 3 * * * ${PROJECT_DIR}/disk-reclaim.sh >> /var/log/disk-reclaim.log 2>&1' | crontab -"
+fi
+
 # ---- Done ----
 echo ""
 echo -e "${GREEN}╔══════════════════════════════════════════════╗${NC}"
