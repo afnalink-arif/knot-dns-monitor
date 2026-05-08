@@ -195,8 +195,11 @@ docker compose up -d --no-deps dnstap-ingester
 sleep 2
 
 info "  Restarting kresd..."
-docker compose restart kresd
+docker compose up -d --no-deps kresd
 sleep 2
+
+info "  Restarting dnsdist (packet cache proxy)..."
+docker compose up -d --no-deps dnsdist
 
 info "  Restarting monitoring..."
 docker compose restart prometheus node-exporter

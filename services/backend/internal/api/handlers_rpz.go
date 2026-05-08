@@ -264,16 +264,24 @@ func (s *Server) handleRPZSync(w http.ResponseWriter, r *http.Request) {
 	convertedFile := tmpFile + ".converted"
 	result, convertErr := convertRPZForKresd(tmpFile, convertedFile)
 	if convertErr != nil {
-		sendEvent(fmt.Sprintf("[WARN] Conversion error: %v — using raw zone", convertErr))
-		convertedFile = tmpFile
-	} else {
-		sendEvent(fmt.Sprintf("[OK] Converted %d CNAME records to NXDOMAIN format", result.converted))
-		if result.skipped > 0 {
-			sendEvent(fmt.Sprintf("[INFO] Skipped %d entries with invalid domain names (non-ASCII, special chars)", result.skipped))
-		}
-		os.Remove(tmpFile)
-		tmpFile = convertedFile
+		// Conversion failure (commonly disk-full mid-write) leaves a partial converted file
+		// and a raw AXFR file that contains records kresd's parser will reject (escape
+		// octal sequences, duplicate SOA, NS records). Publishing either breaks policy-loader.
+		// Abort so the existing rpz.zone — known good from a previous successful sync — stays in place.
+		errMsg := fmt.Sprintf("RPZ conversion failed: %v — keeping previous zone file", convertErr)
+		sendEvent(fmt.Sprintf("[ERROR] %s", errMsg))
+		os.Remove(convertedFile)
+		s.updateRPZSyncStatus("error", errMsg, 0, 0, int(time.Since(startTime).Milliseconds()))
+		fmt.Fprintf(w, "event: error\ndata: %s\n\n", errMsg)
+		flusher.Flush()
+		return
 	}
+	sendEvent(fmt.Sprintf("[OK] Converted %d CNAME records to NXDOMAIN format", result.converted))
+	if result.skipped > 0 {
+		sendEvent(fmt.Sprintf("[INFO] Skipped %d entries with invalid domain names (non-ASCII, special chars)", result.skipped))
+	}
+	os.Remove(tmpFile)
+	tmpFile = convertedFile
 
 	// Count domains by scanning the file (streaming, not loading all into memory)
 	sendEvent("[INFO] Counting domains in zone file...")
@@ -774,13 +782,17 @@ func (s *Server) doRPZSyncBackground() {
 	convertedFile := tmpFile + ".converted"
 	result, convertErr := convertRPZForKresd(tmpFile, convertedFile)
 	if convertErr != nil {
-		log.Printf("RPZ auto-sync: conversion warning: %v", convertErr)
-		convertedFile = tmpFile
-	} else {
-		log.Printf("RPZ auto-sync: converted %d CNAME records", result.converted)
-		os.Remove(tmpFile)
-		tmpFile = convertedFile
+		// See handleRPZSync: a partial conversion (typically disk-full) must not fall back
+		// to the raw AXFR — kresd's parser rejects escape sequences, duplicate SOA, and NS
+		// records present in the raw zone. Keep the previous good rpz.zone instead.
+		errMsg := fmt.Sprintf("auto-sync: conversion failed: %v", convertErr)
+		log.Printf("RPZ %s — keeping previous zone file", errMsg)
+		s.updateRPZSyncStatus("error", errMsg, 0, 0, int(time.Since(startTime).Milliseconds()))
+		return
 	}
+	log.Printf("RPZ auto-sync: converted %d CNAME records (skipped %d invalid)", result.converted, result.skipped)
+	os.Remove(tmpFile)
+	tmpFile = convertedFile
 
 	domainCount := countRPZDomains(tmpFile, cfg.ZoneName)
 

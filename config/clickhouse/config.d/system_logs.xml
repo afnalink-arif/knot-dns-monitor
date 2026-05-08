@@ -1,0 +1,42 @@
+<?xml version="1.0"?>
+<!--
+  ClickHouse internal log tables (text_log, query_log, etc.) ship with no TTL by default.
+  On a busy DNS pipeline they grow into double-digit gigabytes and can fill the disk.
+  This file caps each table to a reasonable retention. Mounted into config.d/, applied at
+  startup. Existing tables get the new TTL on first ALTER below; disk-reclaim.sh also
+  ALTER+OPTIMIZE these tables idempotently to handle pre-existing deployments.
+-->
+<clickhouse>
+    <!-- text_log dumps every server log line — duplicates stdout, biggest waste. -->
+    <text_log>
+        <ttl>event_date + INTERVAL 3 DAY DELETE</ttl>
+    </text_log>
+
+    <query_log>
+        <ttl>event_date + INTERVAL 7 DAY DELETE</ttl>
+    </query_log>
+
+    <part_log>
+        <ttl>event_date + INTERVAL 7 DAY DELETE</ttl>
+    </part_log>
+
+    <query_views_log>
+        <ttl>event_date + INTERVAL 7 DAY DELETE</ttl>
+    </query_views_log>
+
+    <metric_log>
+        <ttl>event_date + INTERVAL 3 DAY DELETE</ttl>
+    </metric_log>
+
+    <trace_log>
+        <ttl>event_date + INTERVAL 3 DAY DELETE</ttl>
+    </trace_log>
+
+    <asynchronous_metric_log>
+        <ttl>event_date + INTERVAL 3 DAY DELETE</ttl>
+    </asynchronous_metric_log>
+
+    <processors_profile_log>
+        <ttl>event_date + INTERVAL 3 DAY DELETE</ttl>
+    </processors_profile_log>
+</clickhouse>

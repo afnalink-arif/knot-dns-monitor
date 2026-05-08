@@ -1,11 +1,14 @@
 #!/bin/bash
 # disk-reclaim.sh — Automatic disk reclaim for knot-dns-monitor
-# Run via cron: 0 3 * * * /root/knot-dns-monitor/disk-reclaim.sh >> /var/log/disk-reclaim.log 2>&1
+# Run via cron: 0 */6 * * * /path/to/disk-reclaim.sh >> /var/log/disk-reclaim.log 2>&1
 
 set -euo pipefail
-cd /root/knot-dns-monitor
+
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$PROJECT_DIR"
 
 DISK_WARN_PERCENT=85
+DISK_EARLY_WARN_PERCENT=75
 CH_RETENTION_DAYS=14
 LOG_PREFIX="[disk-reclaim $(date '+%Y-%m-%d %H:%M:%S')]"
 
@@ -50,9 +53,36 @@ docker compose exec -T clickhouse clickhouse-client -d dnsmonitor \
 
 log "ClickHouse cleanup done"
 
-# 2. Truncate old container logs (for containers without log rotation)
+# 1b. ClickHouse system tables — text_log/query_log/etc default ke unlimited.
+# system_logs.xml in config.d normally caps these, but apply TTL idempotently here too
+# so existing deployments without the XML still get bounded growth.
+log "Applying TTL to ClickHouse system tables..."
+declare -A SYSTEM_TTL=(
+    [text_log]=3
+    [trace_log]=3
+    [metric_log]=3
+    [asynchronous_metric_log]=3
+    [processors_profile_log]=3
+    [part_log]=7
+    [query_log]=7
+    [query_views_log]=7
+)
+for tbl in "${!SYSTEM_TTL[@]}"; do
+    days="${SYSTEM_TTL[$tbl]}"
+    docker compose exec -T clickhouse clickhouse-client \
+        --query "ALTER TABLE system.${tbl} MODIFY TTL event_date + INTERVAL ${days} DAY DELETE;" 2>/dev/null || true
+done
+# OPTIMIZE FINAL forces TTL to materialize (lazy by default)
+for tbl in text_log trace_log metric_log asynchronous_metric_log processors_profile_log part_log query_log query_views_log; do
+    docker compose exec -T clickhouse clickhouse-client \
+        --query "OPTIMIZE TABLE system.${tbl} FINAL;" 2>/dev/null || true
+done
+log "ClickHouse system tables TTL applied"
+
+# 2. Truncate old container logs — runaway crash-loop containers (e.g. postgres "no space
+# left") balloon json.log fast; truncate at >10M (was 50M, too lax for crash-loop pace).
 log "Truncating large container logs..."
-find /var/lib/docker/containers/ -name "*-json.log" -size +50M -exec truncate -s 0 {} \; 2>/dev/null || true
+find /var/lib/docker/containers/ -name "*-json.log" -size +10M -exec truncate -s 0 {} \; 2>/dev/null || true
 
 # 3. Docker system prune (unused images, build cache, dead containers)
 log "Pruning Docker system..."
@@ -73,7 +103,12 @@ fi
 USAGE_AFTER=$(disk_usage_percent)
 log "Disk usage after: ${USAGE_AFTER}%"
 
-# 6. Emergency: if still above threshold, reduce ClickHouse to 7 days
+# 6a. Early warning: disk above 75% — proactive alert
+if [ "$USAGE_AFTER" -ge "$DISK_EARLY_WARN_PERCENT" ] && [ "$USAGE_AFTER" -lt "$DISK_WARN_PERCENT" ]; then
+    log "EARLY WARNING: Disk at ${USAGE_AFTER}% — above ${DISK_EARLY_WARN_PERCENT}% threshold. Consider manual cleanup or increasing retention monitoring."
+fi
+
+# 6b. Emergency: if still above threshold, reduce ClickHouse to 7 days
 if [ "$USAGE_AFTER" -ge "$DISK_WARN_PERCENT" ]; then
     log "WARNING: Disk still at ${USAGE_AFTER}% — emergency cleanup, reducing to 7 days retention"
     EMERGENCY_DATE=$(date -d "-7 days" '+%Y-%m-%d')
@@ -94,12 +129,13 @@ fi
 
 # 7. Adjust kresd cache size if it changed
 if [ -f "${PROJECT_DIR}/calculate-cache-size.sh" ]; then
+    # shellcheck source=./calculate-cache-size.sh
     source "${PROJECT_DIR}/calculate-cache-size.sh"
     NEW_CACHE=$(calculate_cache_size)
-    CURRENT_CACHE=$(grep 'size-max:' config/kresd/config.yaml 2>/dev/null | awk '{print $2}' || echo "")
+    CURRENT_CACHE=$(grep 'size-max:' "${PROJECT_DIR}/config/kresd/config.yaml" 2>/dev/null | awk '{print $2}' || echo "")
     if [ -n "$NEW_CACHE" ] && [ "$NEW_CACHE" != "$CURRENT_CACHE" ]; then
         log "Adjusting kresd cache: ${CURRENT_CACHE} -> ${NEW_CACHE}"
-        sed -i "s/size-max: .*/size-max: ${NEW_CACHE}/" config/kresd/config.yaml
+        sed -i "s/size-max: .*/size-max: ${NEW_CACHE}/" "${PROJECT_DIR}/config/kresd/config.yaml"
         # Restart kresd to apply new cache size
         docker compose stop kresd dnstap-ingester 2>/dev/null || true
         docker compose up -d dnstap-ingester 2>/dev/null || true
