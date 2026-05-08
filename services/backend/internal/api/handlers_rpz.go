@@ -262,7 +262,8 @@ func (s *Server) handleRPZSync(w http.ResponseWriter, r *http.Request) {
 	// Komdigi uses "CNAME lamanlabuh.aduankonten.id." but kresd only supports "CNAME ."
 	sendEvent("[INFO] Converting zone for kresd compatibility...")
 	convertedFile := tmpFile + ".converted"
-	result, convertErr := convertRPZForKresd(tmpFile, convertedFile)
+	redirectIP := loadEnvFile(filepath.Join(s.cfg.ProjectDir, ".env"))["SERVER_IP"]
+	result, convertErr := convertRPZForKresd(tmpFile, convertedFile, redirectIP)
 	if convertErr != nil {
 		// Conversion failure (commonly disk-full mid-write) leaves a partial converted file
 		// and a raw AXFR file that contains records kresd's parser will reject (escape
@@ -276,7 +277,12 @@ func (s *Server) handleRPZSync(w http.ResponseWriter, r *http.Request) {
 		flusher.Flush()
 		return
 	}
-	sendEvent(fmt.Sprintf("[OK] Converted %d CNAME records to NXDOMAIN format", result.converted))
+	sendEvent(fmt.Sprintf("[OK] Converted %d records (%s)", result.converted, func() string {
+		if redirectIP != "" {
+			return fmt.Sprintf("A record redirect to %s", redirectIP)
+		}
+		return "NXDOMAIN"
+	}()))
 	if result.skipped > 0 {
 		sendEvent(fmt.Sprintf("[INFO] Skipped %d entries with invalid domain names (non-ASCII, special chars)", result.skipped))
 	}
@@ -479,7 +485,9 @@ func (s *Server) regenerateKresdConfig(includeRPZ bool) {
 	os.WriteFile(configPath, []byte(config), 0644)
 }
 
-// convertRPZForKresd converts custom CNAME targets to "CNAME ." (NXDOMAIN).
+// convertRPZForKresd converts custom CNAME targets for kresd compatibility.
+// If redirectIP is non-empty, CNAME records are converted to A records pointing to redirectIP
+// (block page mode). Otherwise they are converted to "CNAME ." (NXDOMAIN).
 // Komdigi RPZ uses "CNAME lamanlabuh.aduankonten.id." which kresd doesn't support.
 // Streams line-by-line to handle 1.4GB+ files without memory issues.
 // convertResult holds stats from the conversion
@@ -488,7 +496,7 @@ type convertResult struct {
 	skipped   int
 }
 
-func convertRPZForKresd(src, dst string) (convertResult, error) {
+func convertRPZForKresd(src, dst, redirectIP string) (convertResult, error) {
 	in, err := os.Open(src)
 	if err != nil {
 		return convertResult{}, err
@@ -571,8 +579,9 @@ func convertRPZForKresd(src, dst string) (convertResult, error) {
 			continue
 		}
 
-		// Convert custom CNAME targets to "." (NXDOMAIN)
-		// Komdigi uses "CNAME lamanlabuh.aduankonten.id." — kresd only supports "CNAME ."
+		// Convert custom CNAME targets for kresd compatibility.
+		// If redirectIP is set, produce A records (block page redirect).
+		// Otherwise produce "CNAME ." (NXDOMAIN).
 		// Skip rpz-passthru (whitelisted domains)
 		if !strings.Contains(line, "CNAME\t.") && !strings.Contains(line, "CNAME .") &&
 			!strings.Contains(strings.ToUpper(line), "RPZ-PASSTHRU") {
@@ -580,7 +589,12 @@ func convertRPZForKresd(src, dst string) (convertResult, error) {
 				if strings.ToUpper(f) == "CNAME" && i+1 < len(fields) {
 					target := fields[i+1]
 					if target != "." && !strings.HasPrefix(strings.ToLower(target), "rpz-") {
-						fields[i+1] = "."
+						if redirectIP != "" {
+							fields[i] = "A"
+							fields[i+1] = redirectIP
+						} else {
+							fields[i+1] = "."
+						}
 						converted++
 					}
 					break
@@ -780,7 +794,8 @@ func (s *Server) doRPZSyncBackground() {
 	}
 
 	convertedFile := tmpFile + ".converted"
-	result, convertErr := convertRPZForKresd(tmpFile, convertedFile)
+	redirectIP := loadEnvFile(filepath.Join(s.cfg.ProjectDir, ".env"))["SERVER_IP"]
+	result, convertErr := convertRPZForKresd(tmpFile, convertedFile, redirectIP)
 	if convertErr != nil {
 		// See handleRPZSync: a partial conversion (typically disk-full) must not fall back
 		// to the raw AXFR — kresd's parser rejects escape sequences, duplicate SOA, and NS
@@ -790,7 +805,12 @@ func (s *Server) doRPZSyncBackground() {
 		s.updateRPZSyncStatus("error", errMsg, 0, 0, int(time.Since(startTime).Milliseconds()))
 		return
 	}
-	log.Printf("RPZ auto-sync: converted %d CNAME records (skipped %d invalid)", result.converted, result.skipped)
+	log.Printf("RPZ auto-sync: converted %d records (skipped %d invalid), redirect=%s", result.converted, result.skipped, func() string {
+		if redirectIP != "" {
+			return redirectIP
+		}
+		return "NXDOMAIN"
+	}())
 	os.Remove(tmpFile)
 	tmpFile = convertedFile
 
