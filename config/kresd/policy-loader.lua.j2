@@ -34,7 +34,7 @@ log_groups({
 cache.open({{ cfg.cache.size_max.bytes() }}, 'lmdb://{{ cfg.cache.storage }}')
 
 -- Reinitialize ruledb with larger mapsize for large RPZ files (6GB)
-assert(C.kr_rules_init(nil, 6442450944, true) == 0)
+assert(C.kr_rules_init(nil, 8589934592, true) == 0)
 
 -- VIEWS section ------------------------------------
 {% include "views.lua.j2" %}

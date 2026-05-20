@@ -8,7 +8,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -233,15 +232,9 @@ func (s *Server) handleFilterStats(w http.ResponseWriter, r *http.Request) {
 
 // handleApplyFilters regenerates kresd config with blocklist and restarts
 func (s *Server) handleApplyFilters(w http.ResponseWriter, r *http.Request) {
-	// Check if RPZ is enabled to include RPZ domains
 	rpzCfg := s.getRPZConfig()
 	s.regenerateKresdConfig(rpzCfg.Enabled)
-
-	// Restart kresd
-	containerName := findContainerName("kresd")
-	if containerName != "" {
-		exec.Command("docker", "restart", containerName).Run()
-	}
+	restartKresdProper(s.cfg.ProjectDir)
 
 	// Count custom domains
 	var count int

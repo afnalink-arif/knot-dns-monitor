@@ -139,9 +139,7 @@ func (s *Server) handleUpdateServerConfig(w http.ResponseWriter, r *http.Request
 		// Regenerate kresd config with new subnets and restart
 		rpzCfg := s.getRPZConfig()
 		s.regenerateKresdConfig(rpzCfg.Enabled)
-		if name := findContainerName("kresd"); name != "" {
-			exec.Command("docker", "restart", name).Run()
-		}
+		restartKresdProper(s.cfg.ProjectDir)
 		log.Printf("Allowed subnets updated: %s", subnets)
 	}
 

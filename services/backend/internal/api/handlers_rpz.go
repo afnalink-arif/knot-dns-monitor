@@ -19,6 +19,114 @@ import (
 // starts and ends with alphanumeric, contains only alphanumeric and hyphens
 var validRPZLabel = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$`)
 
+func parseSizeMB(s string) int {
+	s = strings.TrimSpace(strings.ToUpper(s))
+	if strings.HasSuffix(s, "G") {
+		v := 0
+		fmt.Sscanf(strings.TrimSuffix(s, "G"), "%d", &v)
+		return v * 1024
+	}
+	if strings.HasSuffix(s, "M") {
+		v := 0
+		fmt.Sscanf(strings.TrimSuffix(s, "M"), "%d", &v)
+		return v
+	}
+	return 0
+}
+
+func formatSizeMB(mb int) string {
+	if mb >= 1024 && mb%1024 == 0 {
+		return fmt.Sprintf("%dG", mb/1024)
+	}
+	return fmt.Sprintf("%dM", mb)
+}
+
+func getTotalMemMB() int {
+	out, err := exec.Command("free", "-m").Output()
+	if err != nil {
+		return 0
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(line, "Mem:") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				v := 0
+				fmt.Sscanf(fields[1], "%d", &v)
+				return v
+			}
+		}
+	}
+	return 0
+}
+
+func resolveCacheSize(envCacheSize, projectDir string, rpzEnabled bool) string {
+	cacheSize := envCacheSize
+	if cacheSize == "" {
+		cacheSize = "8G"
+	}
+
+	if cacheSize == "auto" {
+		scriptPath := filepath.Join(projectDir, "calculate-cache-size.sh")
+		if out, err := exec.Command("bash", "-c",
+			fmt.Sprintf("source %s && calculate_cache_size", scriptPath)).Output(); err == nil {
+			if v := strings.TrimSpace(string(out)); v != "" {
+				cacheSize = v
+			}
+		} else {
+			cacheSize = "4G"
+		}
+	}
+
+	if !rpzEnabled {
+		return cacheSize
+	}
+
+	mb := parseSizeMB(cacheSize)
+	if mb <= 0 {
+		return cacheSize
+	}
+
+	totalMemMB := getTotalMemMB()
+	if totalMemMB <= 0 {
+		return cacheSize
+	}
+
+	ruledbBudgetMB := 4096
+	reserveMB := 2048
+	maxCacheWithRPZ := totalMemMB - ruledbBudgetMB - reserveMB
+	if maxCacheWithRPZ < 256 {
+		maxCacheWithRPZ = 256
+	}
+	if maxCacheWithRPZ > 8192 {
+		maxCacheWithRPZ = 8192
+	}
+
+	if mb > maxCacheWithRPZ {
+		log.Printf("RPZ cache adjustment: %s -> %dM (RAM=%dM, ruledb=%dM, reserve=%dM)",
+			cacheSize, maxCacheWithRPZ, totalMemMB, ruledbBudgetMB, reserveMB)
+		return formatSizeMB(maxCacheWithRPZ)
+	}
+
+	return cacheSize
+}
+
+func restartKresdProper(projectDir string) {
+	composeFile := filepath.Join(projectDir, "docker-compose.yml")
+
+	exec.Command("docker", "compose", "-f", composeFile,
+		"stop", "kresd", "dnstap-ingester").Run()
+
+	exec.Command("docker", "compose", "-f", composeFile,
+		"up", "-d", "dnstap-ingester").Run()
+
+	time.Sleep(2 * time.Second)
+
+	exec.Command("docker", "compose", "-f", composeFile,
+		"up", "-d", "kresd").Run()
+
+	log.Println("kresd restarted with proper sequence (dnstap-ingester first)")
+}
+
 // isValidRPZOwner validates an RPZ owner name for strict libknot compatibility.
 // Each label must start/end with alphanumeric and contain only alphanumeric + hyphens.
 // Underscores, special chars, and labels starting/ending with hyphens are rejected.
@@ -133,9 +241,7 @@ func (s *Server) handleUpdateRPZConfig(w http.ResponseWriter, r *http.Request) {
 	if needRestart {
 		rpzCfg := s.getRPZConfig()
 		s.regenerateKresdConfig(rpzCfg.Enabled)
-		if name := findContainerName("kresd"); name != "" {
-			exec.Command("docker", "restart", name).Run()
-		}
+		restartKresdProper(s.cfg.ProjectDir)
 	}
 
 	writeJSON(w, map[string]string{"message": "RPZ config updated"})
@@ -331,9 +437,7 @@ func (s *Server) handleRPZSync(w http.ResponseWriter, r *http.Request) {
 	if cfg.Enabled {
 		sendEvent("[INFO] Applying to DNS resolver via native RPZ (shared ruledb)...")
 		s.regenerateKresdConfig(true)
-		if name := findContainerName("kresd"); name != "" {
-			exec.Command("docker", "restart", name).Run()
-		}
+		restartKresdProper(s.cfg.ProjectDir)
 		sendEvent("[OK] DNS resolver restarted — policy-loader sedang memuat RPZ zone ke ruledb...")
 		sendEvent(fmt.Sprintf("[INFO] Loading %d domain ke shared LMDB database. Proses ini berjalan di background.", domainCount))
 	} else {
@@ -392,10 +496,7 @@ func (s *Server) regenerateKresdConfig(includeRPZ bool) {
 	if serverIP == "" {
 		serverIP = "0.0.0.0"
 	}
-	cacheSize := envVars["CACHE_SIZE"]
-	if cacheSize == "" {
-		cacheSize = "8G"
-	}
+	cacheSize := resolveCacheSize(envVars["CACHE_SIZE"], projectDir, includeRPZ)
 
 	// With native YAML RPZ (local-data.rpz), the zone is loaded once by policy-loader
 	// into shared LMDB ruledb. Workers don't load the zone independently, so no OOM risk.
@@ -844,9 +945,7 @@ func (s *Server) doRPZSyncBackground() {
 
 	if cfg.Enabled {
 		s.regenerateKresdConfig(true)
-		if name := findContainerName("kresd"); name != "" {
-			exec.Command("docker", "restart", name).Run()
-		}
+		restartKresdProper(s.cfg.ProjectDir)
 		log.Println("RPZ auto-sync: kresd restarted with updated zone")
 	}
 }
