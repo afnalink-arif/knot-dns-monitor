@@ -6,12 +6,12 @@ Knot Resolver (kresd) 6.2 management system with monitoring dashboard. Full recu
 
 ## Key Files
 
-- **Documentation**: `/root/dns.md` — comprehensive ops doc (25 sections)
+- **Documentation**: `/root/dns.md` — comprehensive ops doc (26 sections)
 - **Project dir**: `/root/knot-dns-monitor/`
 - **docker-compose.yml**: 11 services (dnsdist, kresd, dnstap-ingester, prometheus, node-exporter, clickhouse, redis, postgres, backend, frontend, caddy)
 - **Config templates**: `config/Caddyfile.template`, `config/kresd/config.yaml.template`
 - **RPZ blocklist**: `config/kresd/rpz.zone` (~17.7M entries, Komdigi TrustPositif)
-- **LMDB overrides**: `config/kresd/policy-loader.lua.j2`, `config/kresd/kresd.lua.j2` (6GB ruledb mapsize)
+- **LMDB overrides**: `config/kresd/policy-loader.lua.j2`, `config/kresd/kresd.lua.j2` (8GB ruledb mapsize)
 - **dnsdist config**: `config/dnsdist/dnsdist.conf.tpl` + `config/dnsdist/entrypoint.sh`
 - **Scripts**: `install.sh` (deploy baru), `update.sh` (rolling update), `disk-reclaim.sh` (cron 03:00), `calculate-cache-size.sh` (dynamic cache)
 
@@ -48,12 +48,22 @@ Other replicas pull from git and run `./update.sh`.
 
 ## Known Issues & Context
 
-- **RPZ load time**: ~38 seconds on cold start (17.7M entries). **Mitigated** by dnsdist packet cache — cached domains still served during restart
-- **Ruledb in tmpfs**: Lost on restart, must rebuild from rpz.zone (~38s)
+- **RPZ load time**: ~3 minutes on cold start (18M entries). **Mitigated** by dnsdist packet cache — cached domains still served during restart
+- **RPZ memory spike**: Policy-loader peaks ~3.6GB during load. **Swap 4GB required** on servers with <= 11GB RAM (see dns.md Section 26)
+- **Ruledb persistent across restart**: `kresd.lua.j2` uses `kr_rules_init(false)` — ruledb survives container restart. Only lost on container recreate (`docker compose rm`)
+- **RPZ-aware cache sizing**: Backend `resolveCacheSize()` reduces cache when RPZ enabled: `RAM - 4GB ruledb - 2GB reserve`. Handles `CACHE_SIZE=auto` via `calculate-cache-size.sh`
 - **dnsdist limitation**: Only cached domains served during kresd downtime; new/uncached domains timeout. DoT/DoH not proxied through dnsdist
 - **Disk space**: Critical on 50GB servers. disk-reclaim.sh runs daily at 03:00. Emergency at 85%, early warning at 75%
 - **iptables not persistent by default**: Already saved to /etc/iptables/rules.v4 via iptables-persistent
 - **Admin password**: Already changed from default
+
+## Swap Status Fleet
+
+| Server | Swap | Status |
+|--------|------|--------|
+| VM 216 | TBD | Perlu setup |
+| VM 212 | TBD | Perlu setup |
+| VM 238 | 4 GB | Aktif |
 
 ## Tech Stack
 
